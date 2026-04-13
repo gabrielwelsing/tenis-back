@@ -1,0 +1,26 @@
+// =============================================================================
+// PRISMA SCHEMA — PostgreSQL (Railway)
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Clip {
+  id               String   @id
+  timestamp        BigInt
+  videoDurationMs  Int
+  audioDurationMs  Int?
+  driveVideoUrl    String
+  driveAudioUrl    String?
+  syncStatus       String   @default("synced")
+  createdAt        DateTime @default(now())
+
+  @@index([createdAt(sort: Desc)])
+  @@map("clips")
+}
