@@ -31,6 +31,39 @@ router.post('/', async (req, res) => {
   return res.status(201).json({ ...clip, timestamp: clip.timestamp.toString() });
 });
 
+// POST /clips/audio — vincula áudio ao vídeo de timestamp mais próximo
+router.post('/audio', async (req, res) => {
+  const { timestamp, audioDurationMs, driveAudioUrl } = req.body;
+  if (!timestamp || !driveAudioUrl) {
+    return res.status(400).json({ error: 'Campos obrigatórios: timestamp, driveAudioUrl.' });
+  }
+
+  // Busca o clipe com timestamp mais próximo (sem áudio ainda)
+  const clips = await prisma.clip.findMany({
+    where: { driveAudioUrl: null },
+    orderBy: { timestamp: 'desc' },
+    take: 10,
+  });
+
+  if (clips.length === 0) {
+    return res.status(404).json({ error: 'Nenhum vídeo encontrado para vincular.' });
+  }
+
+  const ts      = BigInt(timestamp);
+  const closest = clips.reduce((prev, curr) => {
+    const diffPrev = prev.timestamp > ts ? prev.timestamp - ts : ts - prev.timestamp;
+    const diffCurr = curr.timestamp > ts ? curr.timestamp - ts : ts - curr.timestamp;
+    return diffCurr < diffPrev ? curr : prev;
+  });
+
+  const updated = await prisma.clip.update({
+    where: { id: closest.id },
+    data:  { driveAudioUrl, audioDurationMs: audioDurationMs ?? null },
+  });
+
+  return res.json({ ...updated, timestamp: updated.timestamp.toString() });
+});
+
 // GET /clips — retorna todos os lances, do mais recente ao mais antigo
 router.get('/', async (_req, res) => {
   const clips = await prisma.clip.findMany({
