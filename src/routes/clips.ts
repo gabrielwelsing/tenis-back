@@ -31,33 +31,45 @@ router.post('/', async (req, res) => {
   return res.status(201).json({ ...clip, timestamp: clip.timestamp.toString() });
 });
 
-// POST /clips/audio — vincula áudio ao vídeo de timestamp mais próximo
+// POST /clips/audio — vincula áudio ao vídeo
+// Se videoId for enviado → vincula direto (lógica correta e determinística)
+// Se não for enviado → fallback por timestamp mais próximo
 router.post('/audio', async (req, res) => {
-  const { timestamp, audioDurationMs, driveAudioUrl } = req.body;
+  const { timestamp, audioDurationMs, driveAudioUrl, videoId } = req.body;
+
   if (!timestamp || !driveAudioUrl) {
     return res.status(400).json({ error: 'Campos obrigatórios: timestamp, driveAudioUrl.' });
   }
 
-  // Busca o clipe com timestamp mais próximo (sem áudio ainda)
+  // ── Caso 1: videoId explícito — vincula direto, sem adivinhação ───────────
+  if (videoId) {
+    const clip = await prisma.clip.findUnique({ where: { id: videoId } });
+
+    if (!clip) {
+      return res.status(404).json({ error: `Vídeo ${videoId} não encontrado.` });
+    }
+
+    const updated = await prisma.clip.update({
+      where: { id: videoId },
+      data:  { driveAudioUrl, audioDurationMs: audioDurationMs ?? null },
+    });
+
+    return res.json({ ...updated, timestamp: updated.timestamp.toString() });
+  }
+
+  // ── Caso 2: fallback — busca o vídeo mais recente sem áudio ───────────────
   const clips = await prisma.clip.findMany({
-    where: { driveAudioUrl: null },
+    where:   { driveAudioUrl: null },
     orderBy: { timestamp: 'desc' },
-    take: 10,
+    take:    1,
   });
 
   if (clips.length === 0) {
-    return res.status(404).json({ error: 'Nenhum vídeo encontrado para vincular.' });
+    return res.status(404).json({ error: 'Nenhum vídeo sem áudio encontrado.' });
   }
 
-  const ts      = BigInt(timestamp);
-  const closest = clips.reduce((prev, curr) => {
-    const diffPrev = prev.timestamp > ts ? prev.timestamp - ts : ts - prev.timestamp;
-    const diffCurr = curr.timestamp > ts ? curr.timestamp - ts : ts - curr.timestamp;
-    return diffCurr < diffPrev ? curr : prev;
-  });
-
   const updated = await prisma.clip.update({
-    where: { id: closest.id },
+    where: { id: clips[0].id },
     data:  { driveAudioUrl, audioDurationMs: audioDurationMs ?? null },
   });
 
