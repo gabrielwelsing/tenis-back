@@ -146,34 +146,63 @@ const ATLETAS: Record<string, string> = {
 // Formato: ATLETA_IMAGES[atletaId][golpeFaseId] = { url, credit }
 const ATLETA_IMAGES: Record<string, Record<string, { url: string; credit: string }>> = {
   federer: {
+    forehand_contato: {
+      url:    'https://commons.wikimedia.org/wiki/Special:FilePath/Federer_Forehand_2012.jpg',
+      credit: 'Roger Federer (Wikimedia Commons)',
+    },
+    saque_contato: {
+      url:    'https://commons.wikimedia.org/wiki/Special:FilePath/Federer_body_serve_%2827009789726%29.jpg',
+      credit: 'Roger Federer (Wikimedia Commons)',
+    },
+    backhand_preparacao: {
+      url:    'https://commons.wikimedia.org/wiki/Special:FilePath/Roger_Federer_at_the_US_Open_2011_backhand.jpg',
+      credit: 'Roger Federer (Wikimedia Commons)',
+    },
     slice_contato: {
       url:    'https://upload.wikimedia.org/wikipedia/commons/a/a4/Federer_Slice_Backhand_return_-_crop_%2827042964215%29.jpg',
       credit: 'Roger Federer (CC BY-SA 2.0 – JC/Tennis-Bargains.com)',
     },
   },
   nadal: {
+    forehand_contato: {
+      url:    'https://commons.wikimedia.org/wiki/Special:FilePath/Rafael_Nadal_2011_Wimbledon_forehand.jpg',
+      credit: 'Rafael Nadal (Wikimedia Commons)',
+    },
     saque_preparacao: {
-      url:    'https://upload.wikimedia.org/wikipedia/commons/3/37/Andy_Roddick_wsh07.jpg',
-      credit: 'Referência saque troféu (CC BY 2.0 – Boss Tweed)',
+      url:    'https://commons.wikimedia.org/wiki/Special:FilePath/Nadal_intense_serve_%2827042955685%29.jpg',
+      credit: 'Rafael Nadal (Wikimedia Commons)',
     },
   },
   djokovic: {
     saque_contato: {
-      url:    'https://upload.wikimedia.org/wikipedia/commons/e/e2/Murray_serve_part_2.jpg',
-      credit: 'Referência saque impacto (CC BY 2.0 – Nick Hewson)',
+      url:    'https://commons.wikimedia.org/wiki/Special:FilePath/Novak_Djokovic_serve_2012.jpg',
+      credit: 'Novak Djokovic (Wikimedia Commons)',
+    },
+    backhand_contato: {
+      url:    'https://commons.wikimedia.org/wiki/Special:FilePath/Novak_Djokovic_Backhand_%287313627914%29.jpg',
+      credit: 'Novak Djokovic (Wikimedia Commons)',
     },
   },
-  alcaraz: {},
+  alcaraz: {
+    forehand_preparacao: {
+      url:    'https://commons.wikimedia.org/wiki/Special:FilePath/Carlos_Alcaraz_-_Wimbledon_Final_2023.jpg',
+      credit: 'Carlos Alcaraz (Wikimedia Commons)',
+    },
+  },
   swiatek: {
-    forehand_contato: {
-      url:    "https://upload.wikimedia.org/wikipedia/commons/5/56/Andrea_Petkovic%27s_forehand.jpg",
-      credit: 'Referência forehand (CC BY-SA 3.0)',
+    forehand_preparacao: {
+      url:    'https://commons.wikimedia.org/wiki/Special:FilePath/Iga_Swiatek_practicing_forehand_in_August_2023.jpg',
+      credit: 'Iga Świątek (Wikimedia Commons)',
     },
   },
   barty: {
-    backhand_contato: {
-      url:    'https://upload.wikimedia.org/wikipedia/commons/b/b6/2009_Australian_Open_-_Ana_Ivanovic_03.jpg',
-      credit: 'Referência backhand (CC BY 2.0 – Richard Fisher)',
+    saque_contato: {
+      url:    'https://commons.wikimedia.org/wiki/Special:FilePath/Barty_RG19_%289%29_%2848199405532%29.jpg',
+      credit: 'Ashleigh Barty (Wikimedia Commons)',
+    },
+    slice_contato: {
+      url:    'https://commons.wikimedia.org/wiki/Special:FilePath/Sydney_International_Tennis_WTA_%2833040181178%29.jpg',
+      credit: 'Ashleigh Barty (Wikimedia Commons)',
     },
   },
 };
