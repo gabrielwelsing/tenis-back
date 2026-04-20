@@ -1,6 +1,7 @@
 // =============================================================================
-// GABARITO — Referências biomecânicas por golpe de tênis
-// Imagens: Wikimedia Commons (CC BY 2.0 / CC BY-SA 2.0 / CC BY-SA 3.0)
+// GABARITO — Referências biomecânicas multidimensionais
+// Estrutura: golpe+fase → atleta → nível → ConfigNivel
+// Ângulos calibrados para vista LATERAL (plano sagital)
 // =============================================================================
 
 import { Router } from 'express';
@@ -11,106 +12,259 @@ const router = Router();
 // Tipos
 // ---------------------------------------------------------------------------
 
+type NivelAluno = 'iniciante' | 'intermediario' | 'avancado';
+
 interface JointMeta {
   label: string;
-  ideal: number;       // ângulo ideal em graus
-  tolerancia: number;  // desvio máximo em graus para score = 0%
-  peso: number;        // fator de importância na média ponderada (score geral)
+  ideal: number;
+  tolerancia: number;
+  peso: number;
 }
 
-interface GabaritoGolpe {
-  label: string;
+interface ConfigNivel {
   imageUrl: string;
   imageCredit: string;
   metas: {
     elbow: JointMeta;
-    knee: JointMeta;
-    hip: JointMeta;
+    knee:  JointMeta;
+    hip:   JointMeta;
   };
 }
 
+interface AtletaEntry {
+  label: string;
+  niveis: Record<NivelAluno, ConfigNivel>;
+}
+
+interface GabaritoEntry {
+  label: string;
+  grupo: string;
+  fase: string;
+  atletas: Record<string, AtletaEntry>;
+}
+
 // ---------------------------------------------------------------------------
-// Biblioteca de referências
+// Dados base dos golpes (ângulos laterais, tolerâncias base para intermediário)
 // ---------------------------------------------------------------------------
 
-// Ângulos calibrados para vista LATERAL (plano sagital) — câmera posicionada
-// perpendicular à linha de base. Valores baseados em biomecânica do tênis.
-// As imagens de referência devem idealmente ser fotos laterais dos atletas.
-const GABARITO: Record<string, GabaritoGolpe> = {
-  saque_trofeu: {
-    label: 'Saque — Posição de Troféu',
-    // Vista lateral: braço da raquete dobrado atrás da cabeça, joelhos fletidos carregando energia
-    imageUrl: 'https://upload.wikimedia.org/wikipedia/commons/3/37/Andy_Roddick_wsh07.jpg',
-    imageCredit: 'Andy Roddick (CC BY 2.0 – Boss Tweed)',
-    metas: {
-      elbow: { label: 'Cotovelo', ideal: 90,  tolerancia: 30, peso: 1.2 }, // ~90° na vista lateral: raquete atrás da cabeça
-      knee:  { label: 'Joelho',   ideal: 115, tolerancia: 25, peso: 1.0 }, // ~115° agachado carregando
-      hip:   { label: 'Quadril',  ideal: 155, tolerancia: 20, peso: 0.8 }, // ~155° leve arqueamento dorsal
-    },
+interface GolpeBase {
+  label: string;
+  grupo: string;
+  fase:  string;
+  ideais: { elbow: number; knee: number; hip: number };
+  toles:  { elbow: number; knee: number; hip: number };
+  pesos:  { elbow: number; knee: number; hip: number };
+}
+
+const GOLPES_BASE: Record<string, GolpeBase> = {
+  saque_preparacao: {
+    label: 'Saque — Preparação (Troféu)', grupo: 'Saque', fase: 'Preparação',
+    // Braço de raquete dobrado atrás da cabeça, joelhos fletidos carregando energia
+    ideais: { elbow: 90,  knee: 115, hip: 155 },
+    toles:  { elbow: 30,  knee: 25,  hip: 20  },
+    pesos:  { elbow: 1.2, knee: 1.0, hip: 0.8 },
   },
-  saque_impacto: {
-    label: 'Saque — Impacto',
-    // Vista lateral: braço quase totalmente estendido para cima, pernas estendendo
-    imageUrl: 'https://upload.wikimedia.org/wikipedia/commons/e/e2/Murray_serve_part_2.jpg',
-    imageCredit: 'Andy Murray (CC BY 2.0 – Nick Hewson)',
-    metas: {
-      elbow: { label: 'Cotovelo', ideal: 170, tolerancia: 20, peso: 1.2 }, // quase estendido
-      knee:  { label: 'Joelho',   ideal: 160, tolerancia: 20, peso: 0.8 }, // extensão das pernas
-      hip:   { label: 'Quadril',  ideal: 168, tolerancia: 15, peso: 1.0 }, // rotação/extensão completa
-    },
+  saque_contato: {
+    label: 'Saque — Contato (Impacto)', grupo: 'Saque', fase: 'Contato',
+    // Braço quase totalmente estendido para cima, pernas se estendendo
+    ideais: { elbow: 170, knee: 160, hip: 168 },
+    toles:  { elbow: 20,  knee: 20,  hip: 15  },
+    pesos:  { elbow: 1.2, knee: 0.8, hip: 1.0 },
+  },
+  forehand_preparacao: {
+    label: 'Forehand — Preparação', grupo: 'Forehand', fase: 'Preparação',
+    // Braço puxado para trás, transferência de peso para pé traseiro
+    ideais: { elbow: 120, knee: 140, hip: 140 },
+    toles:  { elbow: 25,  knee: 25,  hip: 25  },
+    pesos:  { elbow: 1.0, knee: 0.9, hip: 1.1 },
   },
   forehand_contato: {
-    label: 'Forehand — Contato',
-    // Vista lateral (câmera atrás da linha de fundo): quadril rotacionado, cotovelo levemente flexionado
-    imageUrl: "https://upload.wikimedia.org/wikipedia/commons/5/56/Andrea_Petkovic%27s_forehand.jpg",
-    imageCredit: 'Andrea Petkovic (CC BY-SA 3.0)',
-    metas: {
-      elbow: { label: 'Cotovelo', ideal: 160, tolerancia: 25, peso: 1.0 }, // levemente flexionado no contato
-      knee:  { label: 'Joelho',   ideal: 140, tolerancia: 25, peso: 1.0 }, // base atlética estável
-      hip:   { label: 'Quadril',  ideal: 150, tolerancia: 20, peso: 1.0 }, // rotação do tronco completada
-    },
+    label: 'Forehand — Contato', grupo: 'Forehand', fase: 'Contato',
+    // Cotovelo levemente fletido, quadril rotacionado, base estável
+    ideais: { elbow: 160, knee: 140, hip: 150 },
+    toles:  { elbow: 25,  knee: 25,  hip: 20  },
+    pesos:  { elbow: 1.0, knee: 1.0, hip: 1.0 },
+  },
+  backhand_preparacao: {
+    label: 'Backhand — Preparação', grupo: 'Backhand', fase: 'Preparação',
+    // Braço cruzado à frente/lateral, rotação de tronco para trás
+    ideais: { elbow: 100, knee: 135, hip: 135 },
+    toles:  { elbow: 25,  knee: 25,  hip: 25  },
+    pesos:  { elbow: 1.1, knee: 0.9, hip: 1.0 },
   },
   backhand_contato: {
-    label: 'Backhand — Contato',
-    // Vista lateral: braço de bater cruzado à frente, joelhos dobrados para baixa bola
-    imageUrl: 'https://upload.wikimedia.org/wikipedia/commons/b/b6/2009_Australian_Open_-_Ana_Ivanovic_03.jpg',
-    imageCredit: 'Ana Ivanovic (CC BY 2.0 – Richard Fisher)',
-    metas: {
-      elbow: { label: 'Cotovelo', ideal: 150, tolerancia: 25, peso: 1.1 }, // braço levemente fletido
-      knee:  { label: 'Joelho',   ideal: 135, tolerancia: 25, peso: 0.9 }, // flexão para ajustar altura
-      hip:   { label: 'Quadril',  ideal: 145, tolerancia: 20, peso: 1.0 }, // rotação oposta ao forehand
-    },
+    label: 'Backhand — Contato', grupo: 'Backhand', fase: 'Contato',
+    // Braço levemente fletido, joelhos dobrados para ajustar altura
+    ideais: { elbow: 150, knee: 135, hip: 145 },
+    toles:  { elbow: 25,  knee: 25,  hip: 20  },
+    pesos:  { elbow: 1.1, knee: 0.9, hip: 1.0 },
+  },
+  slice_preparacao: {
+    label: 'Slice — Preparação', grupo: 'Slice', fase: 'Preparação',
+    // Raquete alta, cotovelo elevado, preparação para swing descendente
+    ideais: { elbow: 100, knee: 140, hip: 150 },
+    toles:  { elbow: 25,  knee: 25,  hip: 20  },
+    pesos:  { elbow: 1.1, knee: 0.9, hip: 1.0 },
   },
   slice_contato: {
-    label: 'Slice — Contato',
-    // Vista lateral: raquete descendo com ângulo, cotovelo mais alto que punho
-    imageUrl: 'https://upload.wikimedia.org/wikipedia/commons/a/a4/Federer_Slice_Backhand_return_-_crop_%2827042964215%29.jpg',
-    imageCredit: 'Roger Federer (CC BY-SA 2.0 – JC/Tennis-Bargains.com)',
-    metas: {
-      elbow: { label: 'Cotovelo', ideal: 135, tolerancia: 25, peso: 1.1 }, // mais fechado para dar efeito cortado
-      knee:  { label: 'Joelho',   ideal: 130, tolerancia: 25, peso: 0.9 }, // um pouco mais fletido que backhand
-      hip:   { label: 'Quadril',  ideal: 145, tolerancia: 20, peso: 1.0 }, // posição semi-aberta
+    label: 'Slice — Contato', grupo: 'Slice', fase: 'Contato',
+    // Raquete descendo com ângulo, cotovelo mais alto que punho
+    ideais: { elbow: 135, knee: 130, hip: 145 },
+    toles:  { elbow: 25,  knee: 25,  hip: 20  },
+    pesos:  { elbow: 1.1, knee: 0.9, hip: 1.0 },
+  },
+  volley_preparacao: {
+    label: 'Volley — Preparação', grupo: 'Volley', fase: 'Preparação',
+    // Backswing compacto, split step, cotovelo flexionado
+    ideais: { elbow: 90,  knee: 130, hip: 145 },
+    toles:  { elbow: 25,  knee: 25,  hip: 20  },
+    pesos:  { elbow: 1.0, knee: 1.0, hip: 1.0 },
+  },
+  volley_contato: {
+    label: 'Volley — Contato', grupo: 'Volley', fase: 'Contato',
+    // Movimento de punho para frente, braço quase estendido
+    ideais: { elbow: 160, knee: 140, hip: 155 },
+    toles:  { elbow: 20,  knee: 20,  hip: 20  },
+    pesos:  { elbow: 1.0, knee: 1.0, hip: 1.0 },
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Atletas de referência
+// ---------------------------------------------------------------------------
+
+const ATLETAS: Record<string, string> = {
+  federer: 'Roger Federer',
+  nadal:   'Rafael Nadal',
+  djokovic: 'Novak Djokovic',
+  alcaraz:  'Carlos Alcaraz',
+  swiatek:  'Iga Swiatek',
+  barty:    'Ashleigh Barty',
+};
+
+// Imagens por atleta × golpe+fase (preenchidas quando disponíveis)
+// Formato: ATLETA_IMAGES[atletaId][golpeFaseId] = { url, credit }
+const ATLETA_IMAGES: Record<string, Record<string, { url: string; credit: string }>> = {
+  federer: {
+    slice_contato: {
+      url:    'https://upload.wikimedia.org/wikipedia/commons/a/a4/Federer_Slice_Backhand_return_-_crop_%2827042964215%29.jpg',
+      credit: 'Roger Federer (CC BY-SA 2.0 – JC/Tennis-Bargains.com)',
+    },
+  },
+  nadal: {
+    saque_preparacao: {
+      url:    'https://upload.wikimedia.org/wikipedia/commons/3/37/Andy_Roddick_wsh07.jpg',
+      credit: 'Referência saque troféu (CC BY 2.0 – Boss Tweed)',
+    },
+  },
+  djokovic: {
+    saque_contato: {
+      url:    'https://upload.wikimedia.org/wikipedia/commons/e/e2/Murray_serve_part_2.jpg',
+      credit: 'Referência saque impacto (CC BY 2.0 – Nick Hewson)',
+    },
+  },
+  alcaraz: {},
+  swiatek: {
+    forehand_contato: {
+      url:    "https://upload.wikimedia.org/wikipedia/commons/5/56/Andrea_Petkovic%27s_forehand.jpg",
+      credit: 'Referência forehand (CC BY-SA 3.0)',
+    },
+  },
+  barty: {
+    backhand_contato: {
+      url:    'https://upload.wikimedia.org/wikipedia/commons/b/b6/2009_Australian_Open_-_Ana_Ivanovic_03.jpg',
+      credit: 'Referência backhand (CC BY 2.0 – Richard Fisher)',
     },
   },
 };
 
 // ---------------------------------------------------------------------------
+// Multiplicadores de tolerância por nível
+// ---------------------------------------------------------------------------
+
+const TOLE_MULT: Record<NivelAluno, number> = {
+  iniciante:     2.0,
+  intermediario: 1.0,
+  avancado:      0.4,
+};
+
+// ---------------------------------------------------------------------------
+// Helper: gera os 3 níveis para um atleta×golpe combinado
+// ---------------------------------------------------------------------------
+
+function makeNiveis(
+  imageUrl: string,
+  imageCredit: string,
+  base: GolpeBase,
+): Record<NivelAluno, ConfigNivel> {
+  const niveis = {} as Record<NivelAluno, ConfigNivel>;
+  (Object.keys(TOLE_MULT) as NivelAluno[]).forEach((nivel) => {
+    const mult = TOLE_MULT[nivel];
+    niveis[nivel] = {
+      imageUrl,
+      imageCredit,
+      metas: {
+        elbow: { label: 'Cotovelo', ideal: base.ideais.elbow, tolerancia: Math.round(base.toles.elbow * mult), peso: base.pesos.elbow },
+        knee:  { label: 'Joelho',   ideal: base.ideais.knee,  tolerancia: Math.round(base.toles.knee  * mult), peso: base.pesos.knee  },
+        hip:   { label: 'Quadril',  ideal: base.ideais.hip,   tolerancia: Math.round(base.toles.hip   * mult), peso: base.pesos.hip   },
+      },
+    };
+  });
+  return niveis;
+}
+
+// ---------------------------------------------------------------------------
+// Construir GABARITO completo
+// ---------------------------------------------------------------------------
+
+const GABARITO: Record<string, GabaritoEntry> = {};
+
+Object.entries(GOLPES_BASE).forEach(([golpeFaseId, base]) => {
+  const atletas: Record<string, AtletaEntry> = {};
+  Object.entries(ATLETAS).forEach(([atletaId, atletaLabel]) => {
+    const img = ATLETA_IMAGES[atletaId]?.[golpeFaseId];
+    atletas[atletaId] = {
+      label:  atletaLabel,
+      niveis: makeNiveis(img?.url ?? '', img?.credit ?? '', base),
+    };
+  });
+  GABARITO[golpeFaseId] = {
+    label:   base.label,
+    grupo:   base.grupo,
+    fase:    base.fase,
+    atletas,
+  };
+});
+
+// ---------------------------------------------------------------------------
 // Rotas
 // ---------------------------------------------------------------------------
 
-// GET /gabarito — todos os golpes
+// GET /gabarito — estrutura completa
 router.get('/', (_req, res) => {
   res.json(GABARITO);
 });
 
-// GET /gabarito/:golpeId — golpe específico
-router.get('/:golpeId', (req, res) => {
-  const { golpeId } = req.params;
-  const golpe = GABARITO[golpeId];
-  if (!golpe) {
-    return res.status(404).json({ error: 'Golpe não encontrado', golpeId });
+// GET /gabarito/:golpeFaseId — golpe+fase específico
+router.get('/:golpeFaseId', (req, res) => {
+  const { golpeFaseId } = req.params;
+  const entry = GABARITO[golpeFaseId];
+  if (!entry) {
+    return res.status(404).json({ error: 'Golpe+fase não encontrado', golpeFaseId });
   }
-  res.json(golpe);
+  res.json(entry);
+});
+
+// GET /gabarito/:golpeFaseId/:atletaId/:nivel
+router.get('/:golpeFaseId/:atletaId/:nivel', (req, res) => {
+  const { golpeFaseId, atletaId, nivel } = req.params;
+  const entry = GABARITO[golpeFaseId];
+  if (!entry) return res.status(404).json({ error: 'Golpe+fase não encontrado' });
+  const atleta = entry.atletas[atletaId];
+  if (!atleta) return res.status(404).json({ error: 'Atleta não encontrado' });
+  const config = atleta.niveis[nivel as NivelAluno];
+  if (!config) return res.status(404).json({ error: 'Nível não encontrado' });
+  res.json(config);
 });
 
 export { router as gabaritoRouter };
