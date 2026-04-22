@@ -10,8 +10,19 @@ import { gabaritoRouter } from './routes/gabarito';
 const app  = express();
 const PORT = process.env.PORT ?? 3000;
 
+const ALLOWED_ORIGINS = [
+  'http://localhost:5173',
+  'http://localhost:4173',
+  'https://tenis-front-production.up.railway.app',
+  'https://tenis.sup-ia.com',
+  ...(process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : []),
+];
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL ?? 'http://localhost:5173',
+  origin: (origin, cb) => {
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS bloqueado: ${origin}`));
+  },
 }));
 app.use(express.json());
 
