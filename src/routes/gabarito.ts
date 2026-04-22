@@ -87,8 +87,8 @@ function makeNiveis(base: GolpeBase): Record<NivelAluno, NivelConfig> {
 const BASES: GolpeBase[] = [
   {
     label: 'Saque — Preparação (Troféu)', grupo: 'Saque', fase: 'Preparação',
-    imageUrl:    'https://commons.wikimedia.org/wiki/Special:FilePath/Nadal_intense_serve_%2827042955685%29.jpg',
-    imageCredit: 'Rafael Nadal (Wikimedia Commons)',
+    imageUrl:    'https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Federer_serve_trophy_2.jpg/800px-Federer_serve_trophy_2.jpg',
+    imageCredit: 'Roger Federer — posição de troféu (Wikimedia Commons)',
     // Braço de raquete dobrado atrás da cabeça, joelhos fletidos carregando energia
     ideais: { elbow: 90,  knee: 115, hip: 155 },
     toles:  { elbow: 30,  knee: 25,  hip: 20  },
@@ -96,17 +96,17 @@ const BASES: GolpeBase[] = [
   },
   {
     label: 'Saque — Contato (Impacto)', grupo: 'Saque', fase: 'Contato',
-    imageUrl:    'https://commons.wikimedia.org/wiki/Special:FilePath/Novak_Djokovic_serve_2012.jpg',
-    imageCredit: 'Novak Djokovic (Wikimedia Commons)',
-    // Braço quase totalmente estendido para cima, pernas se estendendo
-    ideais: { elbow: 170, knee: 160, hip: 168 },
+    imageUrl:    'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c7/Novak_Djokovic_serve_2012.jpg/800px-Novak_Djokovic_serve_2012.jpg',
+    imageCredit: 'Novak Djokovic — impacto do saque (Wikimedia Commons)',
+    // Braço estendido no impacto — cotovelo não hiperextende (155°), pernas em extensão
+    ideais: { elbow: 155, knee: 160, hip: 160 },
     toles:  { elbow: 20,  knee: 20,  hip: 15  },
     pesos:  { elbow: 1.2, knee: 0.8, hip: 1.0 },
   },
   {
     label: 'Forehand — Preparação', grupo: 'Forehand', fase: 'Preparação',
-    imageUrl:    'https://commons.wikimedia.org/wiki/Special:FilePath/Carlos_Alcaraz_-_Wimbledon_Final_2023.jpg',
-    imageCredit: 'Carlos Alcaraz (Wikimedia Commons)',
+    imageUrl:    'https://upload.wikimedia.org/wikipedia/commons/thumb/1/16/Federer_Roland_Garros_2011_5.jpg/800px-Federer_Roland_Garros_2011_5.jpg',
+    imageCredit: 'Roger Federer — preparação do forehand (Wikimedia Commons)',
     // Braço puxado para trás, transferência de peso para pé traseiro
     ideais: { elbow: 120, knee: 140, hip: 140 },
     toles:  { elbow: 25,  knee: 25,  hip: 25  },
@@ -114,17 +114,17 @@ const BASES: GolpeBase[] = [
   },
   {
     label: 'Forehand — Contato', grupo: 'Forehand', fase: 'Contato',
-    imageUrl:    'https://commons.wikimedia.org/wiki/Special:FilePath/Federer_Forehand_2012.jpg',
-    imageCredit: 'Roger Federer (Wikimedia Commons)',
-    // Cotovelo levemente fletido, quadril rotacionado, base estável
-    ideais: { elbow: 160, knee: 140, hip: 150 },
-    toles:  { elbow: 25,  knee: 25,  hip: 20  },
+    imageUrl:    'https://upload.wikimedia.org/wikipedia/commons/thumb/6/6b/Federer_Forehand_2012.jpg/800px-Federer_Forehand_2012.jpg',
+    imageCredit: 'Roger Federer — contato do forehand (Wikimedia Commons)',
+    // Cotovelo semifletido no impacto (não totalmente estendido), quadril rotacionado
+    ideais: { elbow: 148, knee: 140, hip: 150 },
+    toles:  { elbow: 22,  knee: 25,  hip: 20  },
     pesos:  { elbow: 1.0, knee: 1.0, hip: 1.0 },
   },
   {
     label: 'Backhand — Preparação', grupo: 'Backhand', fase: 'Preparação',
-    imageUrl:    'https://commons.wikimedia.org/wiki/Special:FilePath/Roger_Federer_at_the_US_Open_2011_backhand.jpg',
-    imageCredit: 'Roger Federer (Wikimedia Commons)',
+    imageUrl:    'https://upload.wikimedia.org/wikipedia/commons/thumb/e/ef/Roger_Federer_at_the_US_Open_2011_backhand.jpg/800px-Roger_Federer_at_the_US_Open_2011_backhand.jpg',
+    imageCredit: 'Roger Federer — preparação do backhand (Wikimedia Commons)',
     // Braço cruzado à frente/lateral, rotação de tronco para trás
     ideais: { elbow: 100, knee: 135, hip: 135 },
     toles:  { elbow: 25,  knee: 25,  hip: 25  },
@@ -132,46 +132,46 @@ const BASES: GolpeBase[] = [
   },
   {
     label: 'Backhand — Contato', grupo: 'Backhand', fase: 'Contato',
-    imageUrl:    'https://commons.wikimedia.org/wiki/Special:FilePath/Novak_Djokovic_Backhand_%287313627914%29.jpg',
-    imageCredit: 'Novak Djokovic (Wikimedia Commons)',
-    // Braço levemente fletido, joelhos dobrados para ajustar altura
+    imageUrl:    'https://upload.wikimedia.org/wikipedia/commons/thumb/7/7a/Novak_Djokovic_Backhand_%287313627914%29.jpg/800px-Novak_Djokovic_Backhand_%287313627914%29.jpg',
+    imageCredit: 'Novak Djokovic — contato do backhand (Wikimedia Commons)',
+    // Cotovelo semifletido, joelhos dobrados para ajustar altura da bola
     ideais: { elbow: 150, knee: 135, hip: 145 },
     toles:  { elbow: 25,  knee: 25,  hip: 20  },
     pesos:  { elbow: 1.1, knee: 0.9, hip: 1.0 },
   },
   {
     label: 'Slice — Preparação', grupo: 'Slice', fase: 'Preparação',
-    imageUrl:    '', // aguardando imagem adequada
-    imageCredit: '',
-    // Raquete alta, cotovelo elevado, preparação para swing descendente
+    imageUrl:    'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a4/Federer_Slice_Backhand_return_-_crop_%2827042964215%29.jpg/400px-Federer_Slice_Backhand_return_-_crop_%2827042964215%29.jpg',
+    imageCredit: 'Roger Federer — preparação do slice (Wikimedia Commons)',
+    // Raquete alta, cotovelo elevado (100°), preparação para swing descendente
     ideais: { elbow: 100, knee: 140, hip: 150 },
     toles:  { elbow: 25,  knee: 25,  hip: 20  },
     pesos:  { elbow: 1.1, knee: 0.9, hip: 1.0 },
   },
   {
     label: 'Slice — Contato', grupo: 'Slice', fase: 'Contato',
-    imageUrl:    'https://upload.wikimedia.org/wikipedia/commons/a/a4/Federer_Slice_Backhand_return_-_crop_%2827042964215%29.jpg',
-    imageCredit: 'Roger Federer (CC BY-SA 2.0 – JC/Tennis-Bargains.com)',
-    // Raquete descendo com ângulo, cotovelo mais alto que punho
+    imageUrl:    'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a4/Federer_Slice_Backhand_return_-_crop_%2827042964215%29.jpg/400px-Federer_Slice_Backhand_return_-_crop_%2827042964215%29.jpg',
+    imageCredit: 'Roger Federer — contato do slice (Wikimedia Commons)',
+    // Raquete descendo com ângulo, cotovelo mais alto que punho no impacto
     ideais: { elbow: 135, knee: 130, hip: 145 },
     toles:  { elbow: 25,  knee: 25,  hip: 20  },
     pesos:  { elbow: 1.1, knee: 0.9, hip: 1.0 },
   },
   {
     label: 'Volley — Preparação', grupo: 'Volley', fase: 'Preparação',
-    imageUrl:    '', // aguardando imagem adequada
-    imageCredit: '',
-    // Backswing compacto, split step, cotovelo flexionado
+    imageUrl:    'https://upload.wikimedia.org/wikipedia/commons/thumb/4/40/Rafael_Nadal_volley.jpg/800px-Rafael_Nadal_volley.jpg',
+    imageCredit: 'Rafael Nadal — preparação para volley (Wikimedia Commons)',
+    // Split step, cotovelo flexionado (90°), backswing compacto, base alargada
     ideais: { elbow: 90,  knee: 130, hip: 145 },
     toles:  { elbow: 25,  knee: 25,  hip: 20  },
     pesos:  { elbow: 1.0, knee: 1.0, hip: 1.0 },
   },
   {
     label: 'Volley — Contato', grupo: 'Volley', fase: 'Contato',
-    imageUrl:    '', // aguardando imagem adequada
-    imageCredit: '',
-    // Movimento de punho para frente, braço quase estendido
-    ideais: { elbow: 160, knee: 140, hip: 155 },
+    imageUrl:    'https://upload.wikimedia.org/wikipedia/commons/thumb/4/40/Rafael_Nadal_volley.jpg/800px-Rafael_Nadal_volley.jpg',
+    imageCredit: 'Rafael Nadal — contato do volley (Wikimedia Commons)',
+    // Movimento de bloqueio compacto — cotovelo semifletido (145°), punho firme
+    ideais: { elbow: 145, knee: 140, hip: 155 },
     toles:  { elbow: 20,  knee: 20,  hip: 20  },
     pesos:  { elbow: 1.0, knee: 1.0, hip: 1.0 },
   },
