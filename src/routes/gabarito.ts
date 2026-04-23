@@ -97,8 +97,8 @@ const BASES: GolpeBase[] = [
   },
   {
     label: 'Saque — Contato (Impacto)', grupo: 'Saque', fase: 'Contato',
-    imageUrl:    BASE_IMG + 'Djokovic_trophy_pose_on_serve_%282%29_%287861310456%29.jpg',
-    imageCredit: 'Novak Djokovic — impacto do saque (Wikimedia Commons)',
+    imageUrl:    BASE_IMG + 'Andy_Murray_serve_part_2.jpg',
+    imageCredit: 'Andy Murray — contato do saque, Australian Open 2011 (Wikimedia Commons)',
     ideais: { elbow: 155, knee: 160, hip: 160 },
     toles:  { elbow: 20,  knee: 20,  hip: 15  },
     pesos:  { elbow: 1.2, knee: 0.8, hip: 1.0 },
@@ -113,8 +113,8 @@ const BASES: GolpeBase[] = [
   },
   {
     label: 'Forehand — Contato', grupo: 'Forehand', fase: 'Contato',
-    imageUrl:    BASE_IMG + 'Carlos_Alcaraz_-_Roland_Garros_2025_-_serving_%28cropped%29.jpg',
-    imageCredit: 'Carlos Alcaraz — contato do forehand (Wikimedia Commons)',
+    imageUrl:    BASE_IMG + 'Rafa_Nadal_Forehand_Wimbledon.jpg',
+    imageCredit: 'Rafael Nadal — contato do forehand topspin, Wimbledon 2012 (Wikimedia Commons)',
     ideais: { elbow: 148, knee: 140, hip: 150 },
     toles:  { elbow: 22,  knee: 25,  hip: 20  },
     pesos:  { elbow: 1.0, knee: 1.0, hip: 1.0 },
@@ -137,8 +137,8 @@ const BASES: GolpeBase[] = [
   },
   {
     label: 'Slice — Preparação', grupo: 'Slice', fase: 'Preparação',
-    imageUrl:    BASE_IMG + 'Federer_Slice_Backhand_return_-_crop_%2827042964215%29.jpg',
-    imageCredit: 'Roger Federer — preparação do slice (Wikimedia Commons)',
+    imageUrl:    BASE_IMG + 'Backhand_Federer.jpg',
+    imageCredit: 'Roger Federer — preparação do backhand slice, US Open 2007 (Wikimedia Commons)',
     ideais: { elbow: 100, knee: 140, hip: 150 },
     toles:  { elbow: 25,  knee: 25,  hip: 20  },
     pesos:  { elbow: 1.1, knee: 0.9, hip: 1.0 },
