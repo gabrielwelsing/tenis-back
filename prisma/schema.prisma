@@ -24,3 +24,21 @@ model Clip {
   @@index([createdAt(sort: Desc)])
   @@map("clips")
 }
+
+model Jogo {
+  id              String   @id
+  cidade          String
+  classe          String
+  dataInicio      String
+  dataFim         String?
+  horarioInicio   String
+  horarioFim      String
+  local           String
+  whatsapp        String
+  publicadoEm     BigInt
+  emailPublicador String?
+  createdAt       DateTime @default(now())
+
+  @@index([cidade, dataInicio])
+  @@map("jogos")
+}
