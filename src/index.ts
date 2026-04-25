@@ -1,12 +1,12 @@
 // =============================================================================
 // TENIS-BACK — Entry point
 // =============================================================================
-
 import express from 'express';
 import cors    from 'cors';
 import { clipsRouter }    from './routes/clips';
 import { gabaritoRouter } from './routes/gabarito';
 import { jogosRouter }    from './routes/jogos';
+import { authRouter }     from './routes/authRoutes';
 
 const app  = express();
 const PORT = process.env.PORT ?? 3000;
@@ -18,5 +18,6 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 app.use('/clips',    clipsRouter);
 app.use('/gabarito', gabaritoRouter);
 app.use('/jogos',    jogosRouter);
+app.use('/auth',     authRouter);
 
 app.listen(PORT, () => console.log(`tenis-back rodando na porta ${PORT}`));
