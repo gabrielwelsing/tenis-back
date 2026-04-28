@@ -261,6 +261,51 @@ router.patch('/ligas/:ligaId/temporadas/:id', async (req: Request, res: Response
 // PARTIDAS
 // =============================================================================
 
+// POST /ranking/partidas/mural — registra partida originada do Mural (busca adversário por email)
+router.post('/partidas/mural', async (req: Request, res: Response) => {
+  const p = getAuth(req);
+  if (!p) return res.status(401).json({ error: 'Token ausente.' });
+
+  const { temporada_id, email_b, placar, tipo_partida, wo, eu_ganhei, vencedor_e_a, data_partida } = req.body;
+  if (!temporada_id || !email_b || !tipo_partida || !data_partida)
+    return res.status(400).json({ error: 'temporada_id, email_b, tipo_partida e data_partida obrigatórios.' });
+
+  const uB = await pool.query(`SELECT id FROM users WHERE email = $1`, [email_b.trim().toLowerCase()]);
+  if (!uB.rows.length) return res.status(404).json({ error: 'Adversário não encontrado no sistema.' });
+  const jogadorBId = uB.rows[0].id as number;
+  const jogadorAId = p.user_id;
+
+  if (jogadorAId === jogadorBId) return res.status(400).json({ error: 'Os dois jogadores devem ser diferentes.' });
+
+  let vencedorId: number;
+  if (wo) {
+    vencedorId = eu_ganhei ? jogadorAId : jogadorBId;
+  } else if (vencedor_e_a !== undefined) {
+    vencedorId = vencedor_e_a ? jogadorAId : jogadorBId;
+  } else {
+    vencedorId = determinarVencedor(placar as SetScore[], jogadorAId, jogadorBId);
+  }
+
+  const { pontosA, pontosB, bonusA, bonusB } = calcularPontos(
+    wo ? [] : (placar as SetScore[]),
+    tipo_partida,
+    Boolean(wo),
+    vencedorId,
+    jogadorAId,
+    jogadorBId,
+  );
+
+  const r = await pool.query(
+    `INSERT INTO partidas
+       (temporada_id, jogador_a_id, jogador_b_id, placar, tipo_partida,
+        vencedor_id, wo, pontos_a, pontos_b, bonus_a, bonus_b, data_partida)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+    [temporada_id, jogadorAId, jogadorBId, wo ? null : JSON.stringify(placar), tipo_partida,
+     vencedorId, Boolean(wo), pontosA, pontosB, bonusA, bonusB, data_partida],
+  );
+  res.status(201).json({ data: r.rows[0] });
+});
+
 // POST /ranking/partidas — registra partida e calcula pontos
 router.post('/partidas', async (req: Request, res: Response) => {
   const p = getAuth(req);
