@@ -7,6 +7,8 @@ import { clipsRouter }    from './routes/clips';
 import { gabaritoRouter } from './routes/gabarito';
 import { jogosRouter }    from './routes/jogos';
 import { authRouter }     from './routes/authRoutes';
+import { agendaRouter }   from './routes/agenda';
+import { quadrasRouter }  from './routes/quadras';
 
 const app  = express();
 const PORT = process.env.PORT ?? 3000;
@@ -19,5 +21,7 @@ app.use('/clips',    clipsRouter);
 app.use('/gabarito', gabaritoRouter);
 app.use('/jogos',    jogosRouter);
 app.use('/auth',     authRouter);
+app.use('/agenda',   agendaRouter);
+app.use('/quadras',  quadrasRouter);
 
 app.listen(PORT, () => console.log(`tenis-back rodando na porta ${PORT}`));
