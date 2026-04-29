@@ -306,6 +306,145 @@ router.post('/partidas/mural', async (req: Request, res: Response) => {
   res.status(201).json({ data: r.rows[0] });
 });
 
+// =============================================================================
+// RODADAS
+// =============================================================================
+
+// POST /ranking/rodadas — admin cria rodada e gera matchups automaticamente
+router.post('/rodadas', async (req: Request, res: Response) => {
+  const p = getAuth(req);
+  if (!p) return res.status(401).json({ error: 'Token ausente.' });
+  if (p.role !== 'admin') return res.status(403).json({ error: 'Apenas admins.' });
+
+  const { temporada_id, participantes } = req.body as { temporada_id: string; participantes: number[] };
+  if (!temporada_id || !Array.isArray(participantes) || participantes.length < 2)
+    return res.status(400).json({ error: 'temporada_id e ao menos 2 participantes obrigatórios.' });
+
+  // Busca temporada para verificar liga
+  const temp = await pool.query(`SELECT * FROM temporadas WHERE id=$1`, [temporada_id]);
+  if (!temp.rows.length) return res.status(404).json({ error: 'Temporada não encontrada.' });
+
+  // Encerra rodada anterior ativa
+  await pool.query(`UPDATE rodadas SET ativa=false WHERE temporada_id=$1`, [temporada_id]);
+
+  // Cria nova rodada
+  const countR = await pool.query(`SELECT COUNT(*) FROM rodadas WHERE temporada_id=$1`, [temporada_id]);
+  const numero = parseInt(String(countR.rows[0].count)) + 1;
+  const rodada = await pool.query(
+    `INSERT INTO rodadas (temporada_id, numero) VALUES ($1,$2) RETURNING *`,
+    [temporada_id, numero],
+  );
+  const rodadaId = rodada.rows[0].id;
+
+  // Busca posições no ranking para ordenar participantes
+  const posQuery = await pool.query(
+    `SELECT u.id,
+            COALESCE(SUM(
+              CASE WHEN pa.jogador_a_id=u.id THEN pa.pontos_a+pa.bonus_a
+                   WHEN pa.jogador_b_id=u.id THEN pa.pontos_b+pa.bonus_b ELSE 0 END
+            ),0)::int AS total_pontos
+     FROM users u
+     LEFT JOIN partidas pa ON (pa.jogador_a_id=u.id OR pa.jogador_b_id=u.id)
+       AND pa.temporada_id=$1 AND pa.status IN ('confirmada','disputada_admin')
+     WHERE u.id = ANY($2::int[])
+     GROUP BY u.id
+     ORDER BY total_pontos DESC`,
+    [temporada_id, participantes],
+  );
+
+  const ordered = posQuery.rows.map((r: { id: number }) => r.id);
+  const curingaId: number | null = ordered.length % 2 !== 0 ? ordered.pop()! : null;
+
+  // Gera matchups: pareamento por posição adjacente (mais alto vs segundo mais alto, etc.)
+  const inseridos = [];
+  for (let i = 0; i < ordered.length; i += 2) {
+    const desadoId = ordered[i];     // mais alto no ranking = desafiado
+    const desaId   = ordered[i + 1]; // mais abaixo = desafiante
+    const r = await pool.query(
+      `INSERT INTO partidas
+         (temporada_id, jogador_a_id, jogador_b_id, tipo_partida, data_partida,
+          wo, pontos_a, pontos_b, bonus_a, bonus_b, rodada_id)
+       VALUES ($1,$2,$3,'melhor_de_3',NOW()::date,false,0,0,0,0,$4) RETURNING *`,
+      [temporada_id, desaId, desadoId, rodadaId],
+    );
+    inseridos.push(r.rows[0]);
+  }
+
+  res.status(201).json({ data: { rodada: rodada.rows[0], matchups: inseridos, curinga: curingaId } });
+});
+
+// GET /ranking/temporadas/:temporadaId/rodadas — lista rodadas da temporada
+router.get('/temporadas/:temporadaId/rodadas', async (req: Request, res: Response) => {
+  const p = getAuth(req);
+  if (!p) return res.status(401).json({ error: 'Token ausente.' });
+
+  const r = await pool.query(
+    `SELECT ro.*,
+            (SELECT COUNT(*) FROM partidas pa WHERE pa.rodada_id = ro.id) AS total_matchups
+     FROM rodadas ro WHERE ro.temporada_id=$1 ORDER BY ro.numero DESC`,
+    [String(req.params.temporadaId)],
+  );
+  res.json({ data: r.rows });
+});
+
+// GET /ranking/rodadas/:id/matchups — matchups de uma rodada com nomes
+router.get('/rodadas/:id/matchups', async (req: Request, res: Response) => {
+  const p = getAuth(req);
+  if (!p) return res.status(401).json({ error: 'Token ausente.' });
+
+  const r = await pool.query(
+    `SELECT pa.*,
+            ua.nome AS jogador_a_nome, ua.foto_url AS jogador_a_foto,
+            ub.nome AS jogador_b_nome, ub.foto_url AS jogador_b_foto,
+            uv.nome AS vencedor_nome
+     FROM partidas pa
+     JOIN users ua ON ua.id = pa.jogador_a_id
+     JOIN users ub ON ub.id = pa.jogador_b_id
+     LEFT JOIN users uv ON uv.id = pa.vencedor_id
+     WHERE pa.rodada_id=$1
+     ORDER BY pa.created_at`,
+    [String(req.params.id)],
+  );
+  res.json({ data: r.rows });
+});
+
+// PATCH /ranking/rodadas/:id/encerrar — admin encerra rodada
+router.patch('/rodadas/:id/encerrar', async (req: Request, res: Response) => {
+  const p = getAuth(req);
+  if (!p) return res.status(401).json({ error: 'Token ausente.' });
+  if (p.role !== 'admin') return res.status(403).json({ error: 'Apenas admins.' });
+
+  const r = await pool.query(`UPDATE rodadas SET ativa=false WHERE id=$1 RETURNING *`, [String(req.params.id)]);
+  if (!r.rows.length) return res.status(404).json({ error: 'Rodada não encontrada.' });
+  res.json({ data: r.rows[0] });
+});
+
+// GET /ranking/partidas/pendentes — partidas aguardando minha confirmação
+router.get('/partidas/pendentes', async (req: Request, res: Response) => {
+  const p = getAuth(req);
+  if (!p) return res.status(401).json({ error: 'Token ausente.' });
+
+  const r = await pool.query(
+    `SELECT pa.*,
+            ua.nome AS jogador_a_nome, ua.foto_url AS jogador_a_foto,
+            ub.nome AS jogador_b_nome, ub.foto_url AS jogador_b_foto,
+            uv.nome AS vencedor_nome
+     FROM partidas pa
+     JOIN users ua ON ua.id = pa.jogador_a_id
+     JOIN users ub ON ub.id = pa.jogador_b_id
+     LEFT JOIN users uv ON uv.id = pa.vencedor_id
+     WHERE pa.status = 'pendente'
+       AND (pa.jogador_a_id=$1 OR pa.jogador_b_id=$1)
+       AND (
+         (pa.jogador_a_id=$1 AND pa.confirmado_a=false) OR
+         (pa.jogador_b_id=$1 AND pa.confirmado_b=false)
+       )
+     ORDER BY pa.created_at DESC`,
+    [p.user_id],
+  );
+  res.json({ data: r.rows });
+});
+
 // POST /ranking/partidas — registra partida e calcula pontos
 router.post('/partidas', async (req: Request, res: Response) => {
   const p = getAuth(req);
@@ -377,12 +516,12 @@ router.get('/temporadas/:temporadaId/partidas', async (req: Request, res: Respon
   res.json({ data: r.rows });
 });
 
-// PATCH /ranking/partidas/:id/confirmar — outro jogador confirma ou disputa
+// PATCH /ranking/partidas/:id/confirmar — confirmação individual; só vira 'confirmada' quando os 2 confirmam
 router.patch('/partidas/:id/confirmar', async (req: Request, res: Response) => {
   const p = getAuth(req);
   if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
-  const partida = await pool.query(`SELECT * FROM partidas WHERE id=$1`, [req.params.id]);
+  const partida = await pool.query(`SELECT * FROM partidas WHERE id=$1`, [String(req.params.id)]);
   if (!partida.rows.length) return res.status(404).json({ error: 'Partida não encontrada.' });
 
   const pd = partida.rows[0];
@@ -390,13 +529,29 @@ router.patch('/partidas/:id/confirmar', async (req: Request, res: Response) => {
     return res.status(403).json({ error: 'Você não é um dos jogadores desta partida.' });
 
   const { confirmar } = req.body;
-  const novoStatus = confirmar ? 'confirmada' : 'disputada_admin';
 
-  const r = await pool.query(
-    `UPDATE partidas SET status=$1 WHERE id=$2 RETURNING *`,
-    [novoStatus, req.params.id],
-  );
-  res.json({ data: r.rows[0] });
+  if (!confirmar) {
+    const r = await pool.query(
+      `UPDATE partidas SET status='disputada_admin' WHERE id=$1 RETURNING *`,
+      [String(req.params.id)],
+    );
+    return res.json({ data: r.rows[0] });
+  }
+
+  // Marca confirmação do jogador atual
+  const isA = pd.jogador_a_id === p.user_id;
+  const col  = isA ? 'confirmado_a' : 'confirmado_b';
+  await pool.query(`UPDATE partidas SET ${col}=true WHERE id=$1`, [String(req.params.id)]);
+
+  // Verifica se ambos confirmaram
+  const updated = await pool.query(`SELECT * FROM partidas WHERE id=$1`, [String(req.params.id)]);
+  const up = updated.rows[0];
+  if (up.confirmado_a && up.confirmado_b) {
+    await pool.query(`UPDATE partidas SET status='confirmada' WHERE id=$1`, [String(req.params.id)]);
+    up.status = 'confirmada';
+  }
+
+  res.json({ data: up });
 });
 
 // PATCH /ranking/partidas/:id/admin — admin resolve disputa
