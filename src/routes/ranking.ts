@@ -591,25 +591,35 @@ router.patch('/partidas/:id/admin', async (req: Request, res: Response) => {
 // RANKING (tabela calculada dinamicamente)
 // =============================================================================
 
-// GET /ranking/temporadas/:temporadaId/tabela?classe= — tabela de pontos
+// GET /ranking/temporadas/:temporadaId/tabela?classe= — tabela com TODOS que jogaram ao menos 1 partida
+// Ordenada por pontos DESC; separação por classe feita no frontend
 router.get('/temporadas/:temporadaId/tabela', async (req: Request, res: Response) => {
   const p = getAuth(req);
   if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
   const { classe } = req.query as Record<string, string>;
-  const params: (string | null)[] = [String(req.params.temporadaId)];
+  const tempId = String(req.params.temporadaId);
+
+  // Liga da temporada
+  const tempRow = await pool.query(`SELECT liga_id FROM temporadas WHERE id=$1`, [tempId]);
+  if (!tempRow.rows.length) return res.status(404).json({ error: 'Temporada não encontrada.' });
+  const ligaId = tempRow.rows[0].liga_id;
+
+  const params: (string | null)[] = [tempId, ligaId];
   let classeWhere = '';
   if (classe) {
     params.push(classe);
-    classeWhere = `AND ml.classe = $${params.length}`;
+    classeWhere = `AND COALESCE(ml.classe,'geral') = $${params.length}`;
   }
 
+  // Retorna TODOS os jogadores que participaram de ao menos 1 partida confirmada
+  // + membros da liga (mesmo sem partidas, aparecem com 0 pontos)
   const r = await pool.query(
     `SELECT
        u.id,
        u.nome,
        u.foto_url,
-       ml.classe,
+       COALESCE(ml.classe, 'geral') AS classe,
        COALESCE(SUM(
          CASE
            WHEN pa.jogador_a_id = u.id THEN (pa.pontos_a + pa.bonus_a)
@@ -622,15 +632,24 @@ router.get('/temporadas/:temporadaId/tabela', async (req: Request, res: Response
        COUNT(CASE
          WHEN pa.vencedor_id IS NOT NULL AND pa.vencedor_id != u.id THEN 1
        END)::int AS derrotas
-     FROM membros_liga ml
-     JOIN users u ON u.id = ml.user_id
+     FROM (
+       -- membros ativos da liga
+       SELECT DISTINCT ml2.user_id FROM membros_liga ml2 WHERE ml2.liga_id=$2 AND ml2.ativo=true
+       UNION
+       -- jogadores com pelo menos 1 partida confirmada na temporada (mesmo sem ser membro)
+       SELECT DISTINCT pa2.jogador_a_id FROM partidas pa2
+         WHERE pa2.temporada_id=$1 AND pa2.status IN ('confirmada','disputada_admin')
+       UNION
+       SELECT DISTINCT pa2.jogador_b_id FROM partidas pa2
+         WHERE pa2.temporada_id=$1 AND pa2.status IN ('confirmada','disputada_admin')
+     ) base
+     JOIN users u ON u.id = base.user_id
+     LEFT JOIN membros_liga ml ON ml.liga_id=$2 AND ml.user_id=u.id AND ml.ativo=true
      LEFT JOIN partidas pa ON
        (pa.jogador_a_id = u.id OR pa.jogador_b_id = u.id)
        AND pa.temporada_id = $1
        AND pa.status IN ('confirmada', 'disputada_admin')
-     WHERE ml.liga_id = (SELECT liga_id FROM temporadas WHERE id = $1)
-       AND ml.ativo = true
-       ${classeWhere}
+     WHERE 1=1 ${classeWhere}
      GROUP BY u.id, u.nome, u.foto_url, ml.classe
      ORDER BY total_pontos DESC, vitorias DESC, derrotas ASC, u.nome ASC`,
     params,
