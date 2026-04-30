@@ -153,7 +153,7 @@ router.patch('/:id/encerrar', async (req: Request, res: Response) => {
   if (jogo.rows[0].emailPublicador !== email_publicador)
     return res.status(403).json({ error: 'Sem permissão.' });
 
-  await pool.query(`UPDATE jogos SET status='encerrada' WHERE id=$2`, [req.params.id]);
+  await pool.query(`UPDATE jogos SET status='encerrada' WHERE id=$1`, [req.params.id]);
   res.json({ ok: true });
 });
 
