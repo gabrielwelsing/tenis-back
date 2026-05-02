@@ -223,14 +223,38 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
-// DELETE /jogos/:id — remove publicação
+// PATCH /jogos/:id/datas — dono edita somente datas/horários se não confirmada
 // ---------------------------------------------------------------------------
-router.delete('/:id', async (req: Request, res: Response) => {
-  const { emailPublicador } = req.body;
+router.patch('/:id/datas', async (req: Request, res: Response) => {
+  const {
+    emailPublicador,
+    dataInicio,
+    dataFim,
+    horarioInicio,
+    horarioFim,
+  } = req.body;
+
+  if (!emailPublicador) {
+    return res.status(400).json({ error: 'emailPublicador obrigatório.' });
+  }
+
+  if (!dataInicio || !horarioInicio || !horarioFim) {
+    return res.status(400).json({ error: 'Data inicial, horário inicial e horário final são obrigatórios.' });
+  }
+
+  if (dataFim && dataFim < dataInicio) {
+    return res.status(400).json({ error: 'Data final deve ser maior ou igual à data inicial.' });
+  }
+
+  if (horarioFim <= horarioInicio) {
+    return res.status(400).json({ error: 'Horário final deve ser após o horário inicial.' });
+  }
 
   try {
     const jogo = await pool.query(
-      `SELECT * FROM jogos WHERE id=$1`,
+      `SELECT id, status, "emailPublicador"
+       FROM jogos
+       WHERE id = $1`,
       [req.params.id]
     );
 
@@ -238,16 +262,88 @@ router.delete('/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Publicação não encontrada.' });
     }
 
-    if (
-      emailPublicador &&
-      jogo.rows[0].emailPublicador &&
-      jogo.rows[0].emailPublicador !== emailPublicador
-    ) {
+    const row = jogo.rows[0];
+
+    if (!row.emailPublicador || row.emailPublicador.toLowerCase() !== String(emailPublicador).toLowerCase()) {
       return res.status(403).json({ error: 'Sem permissão.' });
     }
 
+    if (row.status === 'confirmada') {
+      return res.status(409).json({ error: 'Partida confirmada não pode ser editada.' });
+    }
+
     await pool.query(
-      `DELETE FROM jogos WHERE id=$1`,
+      `UPDATE jogos
+       SET "dataInicio" = $1,
+           "dataFim" = $2,
+           "horarioInicio" = $3,
+           "horarioFim" = $4
+       WHERE id = $5`,
+      [
+        dataInicio,
+        dataFim ?? null,
+        horarioInicio,
+        horarioFim,
+        req.params.id,
+      ]
+    );
+
+    const atualizado = await pool.query(
+      `SELECT
+          j.*,
+          COALESCE(j.interessados, 0) AS interessados,
+          j.status,
+          j.confirmado_com,
+          COALESCE(u.nome, split_part(j."emailPublicador", '@', 1), 'Jogador') AS "nomePublicador",
+          u.foto_url AS "fotoPublicador"
+       FROM jogos j
+       LEFT JOIN users u
+         ON LOWER(u.email) = LOWER(j."emailPublicador")
+       WHERE j.id = $1`,
+      [req.params.id]
+    );
+
+    res.json(normalizarJogo(atualizado.rows[0]));
+  } catch (e) {
+    console.error('[PATCH /jogos/:id/datas]', e);
+    res.status(500).json({ error: 'Erro ao editar publicação.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /jogos/:id — remove publicação se não confirmada
+// ---------------------------------------------------------------------------
+router.delete('/:id', async (req: Request, res: Response) => {
+  const { emailPublicador } = req.body;
+
+  if (!emailPublicador) {
+    return res.status(400).json({ error: 'emailPublicador obrigatório.' });
+  }
+
+  try {
+    const jogo = await pool.query(
+      `SELECT id, status, "emailPublicador"
+       FROM jogos
+       WHERE id = $1`,
+      [req.params.id]
+    );
+
+    if (!jogo.rows.length) {
+      return res.status(404).json({ error: 'Publicação não encontrada.' });
+    }
+
+    const row = jogo.rows[0];
+
+    if (!row.emailPublicador || row.emailPublicador.toLowerCase() !== String(emailPublicador).toLowerCase()) {
+      return res.status(403).json({ error: 'Sem permissão.' });
+    }
+
+    if (row.status === 'confirmada') {
+      return res.status(409).json({ error: 'Partida confirmada não pode ser excluída.' });
+    }
+
+    await pool.query(
+      `DELETE FROM jogos WHERE id = $1`,
       [req.params.id]
     );
 
