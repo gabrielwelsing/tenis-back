@@ -17,7 +17,7 @@ function normalizarJogo(row: any) {
 }
 
 // ---------------------------------------------------------------------------
-// GET /jogos?cidade=xxx — retorna jogos abertos e futuros
+// GET /jogos?cidade=xxx — retorna jogos ativos e futuros
 // ---------------------------------------------------------------------------
 router.get('/', async (req: Request, res: Response) => {
   const cidade = (req.query.cidade as string | undefined)?.trim();
@@ -40,9 +40,9 @@ router.get('/', async (req: Request, res: Response) => {
        WHERE ($1::text IS NULL OR LOWER(j.cidade) = LOWER($1))
          AND j.status != 'encerrada'
          AND (
-           (j."dataFim" IS NOT NULL AND j."dataFim" >= $2)
+           (j."dataFim" IS NOT NULL AND j."dataFim" > $2)
            OR
-           (j."dataFim" IS NULL AND j."dataInicio" >= $2)
+           (j."dataFim" IS NULL AND j."dataInicio" > $2)
            OR
            (
              (j."dataFim" = $2 OR (j."dataFim" IS NULL AND j."dataInicio" = $2))
@@ -57,6 +57,81 @@ router.get('/', async (req: Request, res: Response) => {
   } catch (e) {
     console.error('[GET /jogos]', e);
     res.status(500).json({ error: 'Erro ao carregar mural.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /jogos/proxima?email=xxx — próxima partida confirmada do usuário
+// IMPORTANTE: esta rota precisa ficar ANTES de /:id/interessados
+// ---------------------------------------------------------------------------
+router.get('/proxima', async (req: Request, res: Response) => {
+  const email = (req.query.email as string | undefined)?.trim();
+
+  if (!email) {
+    return res.status(400).json({ error: 'Email obrigatório.' });
+  }
+
+  const agora = new Date();
+  const hoje = agora.toISOString().split('T')[0];
+  const horaAtual = agora.toTimeString().slice(0, 5); // HH:MM
+
+  try {
+    const result = await pool.query(
+      `SELECT
+          j.*,
+          COALESCE(j.interessados, 0) AS interessados,
+
+          CASE
+            WHEN LOWER(j."emailPublicador") = LOWER($1)
+              THEN COALESCE(u_confirmado.nome, split_part(j.confirmado_com, '@', 1), 'Adversário')
+            ELSE
+              COALESCE(u_publicador.nome, split_part(j."emailPublicador", '@', 1), 'Adversário')
+          END AS "adversarioNome",
+
+          CASE
+            WHEN LOWER(j."emailPublicador") = LOWER($1)
+              THEN j.confirmado_com
+            ELSE
+              j."emailPublicador"
+          END AS "adversarioEmail"
+
+       FROM jogos j
+
+       LEFT JOIN users u_publicador
+         ON LOWER(u_publicador.email) = LOWER(j."emailPublicador")
+
+       LEFT JOIN users u_confirmado
+         ON LOWER(u_confirmado.email) = LOWER(j.confirmado_com)
+
+       WHERE j.status = 'confirmada'
+         AND (
+           LOWER(j."emailPublicador") = LOWER($1)
+           OR LOWER(j.confirmado_com) = LOWER($1)
+         )
+         AND (
+           (j."dataFim" IS NOT NULL AND j."dataFim" > $2)
+           OR
+           (j."dataFim" IS NULL AND j."dataInicio" > $2)
+           OR
+           (
+             (j."dataFim" = $2 OR (j."dataFim" IS NULL AND j."dataInicio" = $2))
+             AND j."horarioFim" > $3
+           )
+         )
+
+       ORDER BY j."dataInicio" ASC, j."horarioInicio" ASC
+       LIMIT 1`,
+      [email, hoje, horaAtual]
+    );
+
+    if (!result.rows.length) {
+      return res.json(null);
+    }
+
+    res.json(normalizarJogo(result.rows[0]));
+  } catch (e) {
+    console.error('[GET /jogos/proxima]', e);
+    res.status(500).json({ error: 'Erro ao carregar próxima partida.' });
   }
 });
 
@@ -78,7 +153,17 @@ router.post('/', async (req: Request, res: Response) => {
     emailPublicador,
   } = req.body;
 
-  if (!id || !cidade || !classe || !dataInicio || !horarioInicio || !horarioFim || !local || !whatsapp || !publicadoEm) {
+  if (
+    !id ||
+    !cidade ||
+    !classe ||
+    !dataInicio ||
+    !horarioInicio ||
+    !horarioFim ||
+    !local ||
+    !whatsapp ||
+    !publicadoEm
+  ) {
     return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
   }
 
@@ -142,20 +227,39 @@ router.post('/', async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 router.delete('/:id', async (req: Request, res: Response) => {
   const { emailPublicador } = req.body;
-  const jogo = await pool.query(`SELECT * FROM jogos WHERE id=$1`, [req.params.id]);
 
-  if (!jogo.rows.length) return res.status(404).json({ error: 'Publicação não encontrada.' });
+  try {
+    const jogo = await pool.query(
+      `SELECT * FROM jogos WHERE id=$1`,
+      [req.params.id]
+    );
 
-  if (emailPublicador && jogo.rows[0].emailPublicador && jogo.rows[0].emailPublicador !== emailPublicador) {
-    return res.status(403).json({ error: 'Sem permissão.' });
+    if (!jogo.rows.length) {
+      return res.status(404).json({ error: 'Publicação não encontrada.' });
+    }
+
+    if (
+      emailPublicador &&
+      jogo.rows[0].emailPublicador &&
+      jogo.rows[0].emailPublicador !== emailPublicador
+    ) {
+      return res.status(403).json({ error: 'Sem permissão.' });
+    }
+
+    await pool.query(
+      `DELETE FROM jogos WHERE id=$1`,
+      [req.params.id]
+    );
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[DELETE /jogos/:id]', e);
+    res.status(500).json({ error: 'Erro ao remover publicação.' });
   }
-
-  await pool.query(`DELETE FROM jogos WHERE id=$1`, [req.params.id]);
-  res.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------
-// POST /jogos/:id/interessado — usuário clicou em WhatsApp (registra interesse)
+// POST /jogos/:id/interessado — usuário clicou em WhatsApp
 // ---------------------------------------------------------------------------
 router.post('/:id/interessado', async (req: Request, res: Response) => {
   const { email_usuario, nome_usuario } = req.body;
@@ -179,59 +283,90 @@ router.post('/:id/interessado', async (req: Request, res: Response) => {
       [req.params.id]
     );
 
-    const jogo = await pool.query(`SELECT interessados FROM jogos WHERE id=$1`, [req.params.id]);
+    const jogo = await pool.query(
+      `SELECT interessados FROM jogos WHERE id=$1`,
+      [req.params.id]
+    );
+
     res.json({ interessados: jogo.rows[0]?.interessados ?? 0 });
   } catch (e) {
-    console.error('[interessado]', e);
+    console.error('[POST /jogos/:id/interessado]', e);
     res.status(500).json({ error: 'Erro interno.' });
   }
 });
 
 // ---------------------------------------------------------------------------
-// GET /jogos/:id/interessados — lista interessados (só p/ dono da sala)
+// GET /jogos/:id/interessados — lista interessados, somente para dono da sala
 // ---------------------------------------------------------------------------
 router.get('/:id/interessados', async (req: Request, res: Response) => {
   const { email_publicador } = req.query as Record<string, string>;
 
-  const jogo = await pool.query(`SELECT "emailPublicador" FROM jogos WHERE id=$1`, [req.params.id]);
+  try {
+    const jogo = await pool.query(
+      `SELECT "emailPublicador" FROM jogos WHERE id=$1`,
+      [req.params.id]
+    );
 
-  if (!jogo.rows.length) return res.status(404).json({ error: 'Jogo não encontrado.' });
+    if (!jogo.rows.length) {
+      return res.status(404).json({ error: 'Jogo não encontrado.' });
+    }
 
-  if (jogo.rows[0].emailPublicador !== email_publicador) {
-    return res.status(403).json({ error: 'Sem permissão.' });
+    if (jogo.rows[0].emailPublicador !== email_publicador) {
+      return res.status(403).json({ error: 'Sem permissão.' });
+    }
+
+    const result = await pool.query(
+      `SELECT email_usuario, nome_usuario, created_at
+       FROM jogo_interessados
+       WHERE jogo_id=$1
+       ORDER BY created_at`,
+      [req.params.id]
+    );
+
+    res.json(result.rows);
+  } catch (e) {
+    console.error('[GET /jogos/:id/interessados]', e);
+    res.status(500).json({ error: 'Erro ao listar interessados.' });
   }
-
-  const result = await pool.query(
-    `SELECT email_usuario, nome_usuario, created_at
-     FROM jogo_interessados
-     WHERE jogo_id=$1
-     ORDER BY created_at`,
-    [req.params.id]
-  );
-
-  res.json(result.rows);
 });
 
 // ---------------------------------------------------------------------------
-// PATCH /jogos/:id/confirmar — dono confirma com um interessado → sala fechada
+// PATCH /jogos/:id/confirmar — dono confirma com interessado
 // ---------------------------------------------------------------------------
 router.patch('/:id/confirmar', async (req: Request, res: Response) => {
   const { email_publicador, confirmado_com } = req.body;
 
-  const jogo = await pool.query(`SELECT "emailPublicador" FROM jogos WHERE id=$1`, [req.params.id]);
-
-  if (!jogo.rows.length) return res.status(404).json({ error: 'Jogo não encontrado.' });
-
-  if (jogo.rows[0].emailPublicador !== email_publicador) {
-    return res.status(403).json({ error: 'Sem permissão.' });
+  if (!email_publicador || !confirmado_com) {
+    return res.status(400).json({ error: 'email_publicador e confirmado_com obrigatórios.' });
   }
 
-  await pool.query(
-    `UPDATE jogos SET status='confirmada', confirmado_com=$1 WHERE id=$2`,
-    [confirmado_com, req.params.id]
-  );
+  try {
+    const jogo = await pool.query(
+      `SELECT "emailPublicador" FROM jogos WHERE id=$1`,
+      [req.params.id]
+    );
 
-  res.json({ ok: true });
+    if (!jogo.rows.length) {
+      return res.status(404).json({ error: 'Jogo não encontrado.' });
+    }
+
+    if (jogo.rows[0].emailPublicador !== email_publicador) {
+      return res.status(403).json({ error: 'Sem permissão.' });
+    }
+
+    await pool.query(
+      `UPDATE jogos
+       SET status='confirmada',
+           confirmado_com=$1
+       WHERE id=$2`,
+      [confirmado_com, req.params.id]
+    );
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[PATCH /jogos/:id/confirmar]', e);
+    res.status(500).json({ error: 'Erro ao confirmar partida.' });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -240,17 +375,34 @@ router.patch('/:id/confirmar', async (req: Request, res: Response) => {
 router.patch('/:id/encerrar', async (req: Request, res: Response) => {
   const { email_publicador } = req.body;
 
-  const jogo = await pool.query(`SELECT "emailPublicador" FROM jogos WHERE id=$1`, [req.params.id]);
-
-  if (!jogo.rows.length) return res.status(404).json({ error: 'Jogo não encontrado.' });
-
-  if (jogo.rows[0].emailPublicador !== email_publicador) {
-    return res.status(403).json({ error: 'Sem permissão.' });
+  if (!email_publicador) {
+    return res.status(400).json({ error: 'email_publicador obrigatório.' });
   }
 
-  await pool.query(`UPDATE jogos SET status='encerrada' WHERE id=$1`, [req.params.id]);
+  try {
+    const jogo = await pool.query(
+      `SELECT "emailPublicador" FROM jogos WHERE id=$1`,
+      [req.params.id]
+    );
 
-  res.json({ ok: true });
+    if (!jogo.rows.length) {
+      return res.status(404).json({ error: 'Jogo não encontrado.' });
+    }
+
+    if (jogo.rows[0].emailPublicador !== email_publicador) {
+      return res.status(403).json({ error: 'Sem permissão.' });
+    }
+
+    await pool.query(
+      `UPDATE jogos SET status='encerrada' WHERE id=$1`,
+      [req.params.id]
+    );
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[PATCH /jogos/:id/encerrar]', e);
+    res.status(500).json({ error: 'Erro ao encerrar partida.' });
+  }
 });
 
 export { router as jogosRouter };
