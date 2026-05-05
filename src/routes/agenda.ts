@@ -39,7 +39,7 @@ async function buildSlotsDodia(admin_email: string, data: string, isAdmin: boole
     `SELECT i.*, u.foto_url
      FROM agenda_inscricoes i
      LEFT JOIN users u ON LOWER(u.email) = LOWER(i.email_aluno)
-     WHERE i.admin_email=$1 AND i.data=$2
+     WHERE i.admin_email=$1 AND i.data=$2 AND i.status != 'cancelada'
      ORDER BY i.created_at`,
     [admin_email, data]
   );
