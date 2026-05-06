@@ -285,20 +285,37 @@ router.post('/slot-override', async (req: Request, res: Response) => {
   res.json(result.rows[0]);
 });
 
-// GET /agenda/solicitacoes?admin_email= — admin vê solicitações
+// GET /agenda/solicitacoes?admin_email=&incluir_historico=1 — admin vê solicitações/confirmadas
 router.get('/solicitacoes', async (req: Request, res: Response) => {
-  const { admin_email } = req.query as Record<string, string>;
+  const { admin_email, incluir_historico } = req.query as Record<string, string>;
   if (!admin_email) return res.status(400).json({ error: 'admin_email obrigatório.' });
-  const result = await pool.query(
-    `SELECT i.*, u.foto_url
-     FROM agenda_inscricoes i
-     LEFT JOIN users u ON LOWER(u.email) = LOWER(i.email_aluno)
-     WHERE i.admin_email=$1
-       AND i.data >= CURRENT_DATE
-       AND i.status IN ('pendente','lista_espera','confirmada')
-     ORDER BY i.data, i.hora_inicio, i.created_at`,
-    [admin_email]
-  );
+
+  const incluiHistorico = incluir_historico === '1' || incluir_historico === 'true';
+
+  const query = incluiHistorico
+    ? `SELECT i.*, u.foto_url
+       FROM agenda_inscricoes i
+       LEFT JOIN users u ON LOWER(u.email) = LOWER(i.email_aluno)
+       WHERE i.admin_email=$1
+         AND i.status IN ('pendente','lista_espera','confirmada')
+         AND (
+           i.status = 'confirmada'
+           OR i.data > CURRENT_DATE
+           OR (i.data = CURRENT_DATE AND i.hora_fim > NOW()::TIME)
+         )
+       ORDER BY i.data, i.hora_inicio, i.created_at`
+    : `SELECT i.*, u.foto_url
+       FROM agenda_inscricoes i
+       LEFT JOIN users u ON LOWER(u.email) = LOWER(i.email_aluno)
+       WHERE i.admin_email=$1
+         AND i.status IN ('pendente','lista_espera','confirmada')
+         AND (
+           i.data > CURRENT_DATE
+           OR (i.data = CURRENT_DATE AND i.hora_fim > NOW()::TIME)
+         )
+       ORDER BY i.data, i.hora_inicio, i.created_at`;
+
+  const result = await pool.query(query, [admin_email]);
   res.json(result.rows);
 });
 
