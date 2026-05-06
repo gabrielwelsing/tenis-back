@@ -433,4 +433,25 @@ router.patch('/reservas/:id/cancelar', async (req: Request, res: Response) => {
   res.json({ ok: true, proximo_espera: proximo.rows[0] ?? null });
 });
 
+// GET /agenda/minhas-inscricoes?email_aluno=&admin_email=
+router.get('/minhas-inscricoes', async (req: Request, res: Response) => {
+  const { email_aluno, admin_email } = req.query as Record<string, string>;
+  if (!email_aluno || !admin_email)
+    return res.status(400).json({ error: 'email_aluno e admin_email obrigatórios.' });
+
+  const result = await pool.query(
+    `SELECT * FROM agenda_inscricoes
+     WHERE email_aluno = $1
+       AND admin_email = $2
+       AND status NOT IN ('cancelada')
+       AND (
+         data > CURRENT_DATE
+         OR (data = CURRENT_DATE AND hora_fim > NOW()::TIME)
+       )
+     ORDER BY data, hora_inicio`,
+    [email_aluno, admin_email]
+  );
+  res.json(result.rows);
+});
+
 export { router as agendaRouter };
