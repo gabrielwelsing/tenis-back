@@ -471,4 +471,70 @@ router.get('/minhas-inscricoes', async (req: Request, res: Response) => {
   res.json(result.rows);
 });
 
+// GET /agenda/proxima?email=&role= — próxima aula confirmada do usuário/admin
+router.get('/proxima', async (req: Request, res: Response) => {
+  const email = (req.query.email as string | undefined)?.trim();
+  const role  = (req.query.role as string | undefined)?.trim();
+
+  if (!email) {
+    return res.status(400).json({ error: 'email obrigatório.' });
+  }
+
+  const isAdmin = role === 'admin';
+
+  try {
+    const result = await pool.query(
+      `SELECT
+          i.id,
+          i.admin_email,
+          i.data::text AS data,
+          i.hora_inicio::text AS hora_inicio,
+          i.hora_fim::text AS hora_fim,
+          i.email_aluno,
+          i.nome_aluno,
+          i.telefone_usuario,
+          i.status,
+          i.created_at,
+          u_aluno.foto_url AS foto_aluno
+       FROM agenda_inscricoes i
+       LEFT JOIN users u_aluno
+         ON LOWER(u_aluno.email) = LOWER(i.email_aluno)
+       WHERE ${isAdmin ? 'LOWER(i.admin_email) = LOWER($1)' : 'LOWER(i.email_aluno) = LOWER($1)'}
+         AND i.status = 'confirmada'
+         AND (
+           i.data > CURRENT_DATE
+           OR (i.data = CURRENT_DATE AND i.hora_fim > NOW()::TIME)
+         )
+       ORDER BY i.data ASC, i.hora_inicio ASC
+       LIMIT 1`,
+      [email]
+    );
+
+    if (!result.rows.length) {
+      return res.json(null);
+    }
+
+    const aula = result.rows[0];
+
+    res.json({
+      tipo: 'aula',
+      id: aula.id,
+      dataInicio: aula.data,
+      dataFim: null,
+      horarioInicio: String(aula.hora_inicio).slice(0, 5),
+      horarioFim: String(aula.hora_fim).slice(0, 5),
+      local: 'Agenda do Prof. Carlão',
+      status: 'confirmada',
+      alunoNome: aula.nome_aluno,
+      alunoEmail: aula.email_aluno,
+      adversarioNome: isAdmin ? aula.nome_aluno : 'Prof. Carlão',
+      adversarioEmail: isAdmin ? aula.email_aluno : aula.admin_email,
+    });
+  } catch (e) {
+    console.error('[GET /agenda/proxima]', e);
+    res.status(500).json({ error: 'Erro ao carregar próxima aula.' });
+  }
+});
+
+
 export { router as agendaRouter };
