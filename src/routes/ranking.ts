@@ -682,6 +682,29 @@ router.post('/desafios', async (req: Request, res: Response) => {
   res.status(201).json({ data: r.rows[0] });
 });
 
+
+// GET /ranking/desafios/pendentes — próximo desafio recebido aguardando resposta
+router.get('/desafios/pendentes', async (req: Request, res: Response) => {
+  const p = getAuth(req);
+  if (!p) return res.status(401).json({ error: 'Token ausente.' });
+
+  const r = await pool.query(
+    `SELECT d.*,
+            ua.nome AS desafiante_nome, ua.foto_url AS desafiante_foto,
+            ub.nome AS desafiado_nome,  ub.foto_url AS desafiado_foto
+     FROM desafios d
+     JOIN users ua ON ua.id = d.desafiante_id
+     JOIN users ub ON ub.id = d.desafiado_id
+     WHERE d.desafiado_id = $1
+       AND d.status = 'pendente'
+     ORDER BY d.created_at ASC
+     LIMIT 1`,
+    [p.user_id],
+  );
+
+  res.json({ data: r.rows[0] ?? null });
+});
+
 // GET /ranking/desafios?ligaId= — desafios do usuário (enviados e recebidos)
 router.get('/desafios', async (req: Request, res: Response) => {
   const p = getAuth(req);
