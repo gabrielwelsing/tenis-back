@@ -678,6 +678,82 @@ router.get('/temporadas/:temporadaId/tabela', async (req: Request, res: Response
   res.json({ data: r.rows });
 });
 
+
+// GET /ranking/atividades — desafios aceitos do usuário para agenda consolidada da Home
+router.get('/atividades', async (req: Request, res: Response) => {
+  const p = getAuth(req);
+  if (!p) return res.status(401).json({ error: 'Token ausente.' });
+
+  try {
+    const r = await pool.query(
+      `SELECT
+          ('desafio-' || d.id::text) AS id,
+          d.id AS "origemId",
+          'desafio' AS tipo,
+          COALESCE(d.contra_data, d.data_sugerida)::text AS "dataInicio",
+          NULL::text AS "dataFim",
+          COALESCE(d.contra_horario, d.horario_sugerido)::text AS "horarioInicio",
+          COALESCE(d.contra_horario, d.horario_sugerido)::text AS "horarioFim",
+          COALESCE(d.contra_local, d.local_sugerido) AS local,
+          CASE
+            WHEN d.desafiante_id = $1
+              THEN ('Desafio vs ' || COALESCE(ub.nome, 'Adversário'))
+            ELSE
+              ('Desafio vs ' || COALESCE(ua.nome, 'Adversário'))
+          END AS titulo,
+          CASE
+            WHEN d.desafiante_id = $1 THEN ub.email
+            ELSE ua.email
+          END AS "pessoaEmail",
+          CASE
+            WHEN d.desafiante_id = $1 THEN COALESCE(ub.nome, 'Adversário')
+            ELSE COALESCE(ua.nome, 'Adversário')
+          END AS "pessoaNome",
+          d.status,
+          CASE
+            WHEN COALESCE(d.contra_data, d.data_sugerida) < CURRENT_DATE
+              OR (
+                COALESCE(d.contra_data, d.data_sugerida) = CURRENT_DATE
+                AND COALESCE(d.contra_horario, d.horario_sugerido) <= NOW()::TIME
+              )
+            THEN true
+            ELSE false
+          END AS passado
+       FROM desafios d
+       JOIN users ua ON ua.id = d.desafiante_id
+       JOIN users ub ON ub.id = d.desafiado_id
+       WHERE d.status = 'aceito'
+         AND (d.desafiante_id = $1 OR d.desafiado_id = $1)
+       ORDER BY
+         CASE
+           WHEN COALESCE(d.contra_data, d.data_sugerida) < CURRENT_DATE
+             OR (
+               COALESCE(d.contra_data, d.data_sugerida) = CURRENT_DATE
+               AND COALESCE(d.contra_horario, d.horario_sugerido) <= NOW()::TIME
+             )
+           THEN 1
+           ELSE 0
+         END,
+         COALESCE(d.contra_data, d.data_sugerida) ASC,
+         COALESCE(d.contra_horario, d.horario_sugerido) ASC
+       LIMIT 80`,
+      [p.user_id],
+    );
+
+    res.json({
+      data: r.rows.map(row => ({
+        ...row,
+        horarioInicio: String(row.horarioInicio).slice(0, 5),
+        horarioFim: String(row.horarioFim).slice(0, 5),
+      })),
+    });
+  } catch (e) {
+    console.error('[GET /ranking/atividades]', e);
+    res.status(500).json({ error: 'Erro ao carregar desafios aceitos.' });
+  }
+});
+
+
 // =============================================================================
 // DESAFIOS
 // =============================================================================
