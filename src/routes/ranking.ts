@@ -307,8 +307,9 @@ router.post('/partidas/mural', async (req: Request, res: Response) => {
   const r = await pool.query(
     `INSERT INTO partidas
        (temporada_id, jogador_a_id, jogador_b_id, placar, tipo_partida,
-        vencedor_id, wo, pontos_a, pontos_b, bonus_a, bonus_b, data_partida)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+        vencedor_id, wo, pontos_a, pontos_b, bonus_a, bonus_b, data_partida,
+        confirmado_a, confirmado_b, status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,true,false,'pendente') RETURNING *`,
     [temporada_id, jogadorAId, jogadorBId, wo ? null : JSON.stringify(placar), tipo_partida,
      vencedorId, Boolean(wo), pontosA, pontosB, bonusA, bonusB, data_partida],
   );
@@ -476,9 +477,16 @@ router.post('/partidas', async (req: Request, res: Response) => {
   if (!wo && (!placar || !Array.isArray(placar) || placar.length === 0))
     return res.status(400).json({ error: 'placar obrigatório quando não é WO.' });
 
+  const jogadorAId = Number(jogador_a_id);
+  const jogadorBId = Number(jogador_b_id);
+  const usuarioEhJogador = p.user_id === jogadorAId || p.user_id === jogadorBId;
+
+  if (p.role !== 'admin' && !usuarioEhJogador)
+    return res.status(403).json({ error: 'Você precisa ser um dos jogadores para registrar este resultado.' });
+
   const vencedorId: number = wo
     ? Number(wo_vencedor_id)
-    : determinarVencedor(placar as SetScore[], Number(jogador_a_id), Number(jogador_b_id));
+    : determinarVencedor(placar as SetScore[], jogadorAId, jogadorBId);
 
   const { pontosA, pontosB, bonusA, bonusB } = calcularPontos(
     wo ? [] : (placar as SetScore[]),
