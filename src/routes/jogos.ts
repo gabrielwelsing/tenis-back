@@ -160,6 +160,10 @@ router.get('/atividades', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Email obrigatório.' });
   }
 
+  const agora = new Date();
+  const hoje = agora.toISOString().split('T')[0];
+  const horaAtual = agora.toTimeString().slice(0, 5); // HH:MM
+
   try {
     const result = await pool.query(
       `SELECT
@@ -192,8 +196,11 @@ router.get('/atividades', async (req: Request, res: Response) => {
           j.status,
           CASE
             WHEN j.status IN ('cancelada', 'encerrada')
-              OR COALESCE(j."dataFim", j."dataInicio") < CURRENT_DATE
-              OR (COALESCE(j."dataFim", j."dataInicio") = CURRENT_DATE AND j."horarioFim" <= NOW()::TIME)
+              OR COALESCE(j."dataFim", j."dataInicio")::text < $2
+              OR (
+                COALESCE(j."dataFim", j."dataInicio")::text = $2
+                AND LEFT(j."horarioFim"::text, 5) <= $3
+              )
             THEN true
             ELSE false
           END AS passado
@@ -210,15 +217,18 @@ router.get('/atividades', async (req: Request, res: Response) => {
        ORDER BY
          CASE
            WHEN j.status IN ('cancelada', 'encerrada')
-             OR COALESCE(j."dataFim", j."dataInicio") < CURRENT_DATE
-             OR (COALESCE(j."dataFim", j."dataInicio") = CURRENT_DATE AND j."horarioFim" <= NOW()::TIME)
+             OR COALESCE(j."dataFim", j."dataInicio")::text < $2
+             OR (
+               COALESCE(j."dataFim", j."dataInicio")::text = $2
+               AND LEFT(j."horarioFim"::text, 5) <= $3
+             )
            THEN 1
            ELSE 0
          END,
          j."dataInicio" ASC,
          j."horarioInicio" ASC
        LIMIT 80`,
-      [email]
+      [email, hoje, horaAtual]
     );
 
     res.json(result.rows.map(row => ({
