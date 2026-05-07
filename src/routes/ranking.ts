@@ -684,6 +684,10 @@ router.get('/atividades', async (req: Request, res: Response) => {
   const p = getAuth(req);
   if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
+  const agora = new Date();
+  const hoje = agora.toISOString().split('T')[0];
+  const horaAtual = agora.toTimeString().slice(0, 5); // HH:MM
+
   try {
     const r = await pool.query(
       `SELECT
@@ -692,29 +696,41 @@ router.get('/atividades', async (req: Request, res: Response) => {
           'desafio' AS tipo,
           COALESCE(d.contra_data, d.data_sugerida)::text AS "dataInicio",
           NULL::text AS "dataFim",
-          COALESCE(d.contra_horario, d.horario_sugerido)::text AS "horarioInicio",
-          COALESCE(d.contra_horario, d.horario_sugerido)::text AS "horarioFim",
+          LEFT(COALESCE(d.contra_horario, d.horario_sugerido)::text, 5) AS "horarioInicio",
+          LEFT(COALESCE(d.contra_horario, d.horario_sugerido)::text, 5) AS "horarioFim",
           COALESCE(d.contra_local, d.local_sugerido) AS local,
           CASE
             WHEN d.desafiante_id = $1
-              THEN ('Desafio vs ' || COALESCE(ub.nome, 'Adversário'))
+              THEN ('Desafio vs ' || COALESCE(ub.nome, split_part(ub.email, '@', 1), 'Adversário'))
             ELSE
-              ('Desafio vs ' || COALESCE(ua.nome, 'Adversário'))
+              ('Desafio vs ' || COALESCE(ua.nome, split_part(ua.email, '@', 1), 'Adversário'))
           END AS titulo,
           CASE
             WHEN d.desafiante_id = $1 THEN ub.email
             ELSE ua.email
           END AS "pessoaEmail",
           CASE
-            WHEN d.desafiante_id = $1 THEN COALESCE(ub.nome, 'Adversário')
-            ELSE COALESCE(ua.nome, 'Adversário')
+            WHEN d.desafiante_id = $1
+              THEN COALESCE(ub.nome, split_part(ub.email, '@', 1), 'Adversário')
+            ELSE
+              COALESCE(ua.nome, split_part(ua.email, '@', 1), 'Adversário')
           END AS "pessoaNome",
+          CASE
+            WHEN d.desafiante_id = $1
+              THEN COALESCE(ub.nome, split_part(ub.email, '@', 1), 'Adversário')
+            ELSE
+              COALESCE(ua.nome, split_part(ua.email, '@', 1), 'Adversário')
+          END AS "adversarioNome",
+          CASE
+            WHEN d.desafiante_id = $1 THEN ub.email
+            ELSE ua.email
+          END AS "adversarioEmail",
           d.status,
           CASE
-            WHEN COALESCE(d.contra_data, d.data_sugerida) < CURRENT_DATE
+            WHEN COALESCE(d.contra_data, d.data_sugerida)::text < $2
               OR (
-                COALESCE(d.contra_data, d.data_sugerida) = CURRENT_DATE
-                AND COALESCE(d.contra_horario, d.horario_sugerido) <= NOW()::TIME
+                COALESCE(d.contra_data, d.data_sugerida)::text = $2
+                AND LEFT(COALESCE(d.contra_horario, d.horario_sugerido)::text, 5) <= $3
               )
             THEN true
             ELSE false
@@ -723,30 +739,25 @@ router.get('/atividades', async (req: Request, res: Response) => {
        JOIN users ua ON ua.id = d.desafiante_id
        JOIN users ub ON ub.id = d.desafiado_id
        WHERE d.status = 'aceito'
+         AND d.desafiante_id <> d.desafiado_id
          AND (d.desafiante_id = $1 OR d.desafiado_id = $1)
        ORDER BY
          CASE
-           WHEN COALESCE(d.contra_data, d.data_sugerida) < CURRENT_DATE
+           WHEN COALESCE(d.contra_data, d.data_sugerida)::text < $2
              OR (
-               COALESCE(d.contra_data, d.data_sugerida) = CURRENT_DATE
-               AND COALESCE(d.contra_horario, d.horario_sugerido) <= NOW()::TIME
+               COALESCE(d.contra_data, d.data_sugerida)::text = $2
+               AND LEFT(COALESCE(d.contra_horario, d.horario_sugerido)::text, 5) <= $3
              )
            THEN 1
            ELSE 0
          END,
-         COALESCE(d.contra_data, d.data_sugerida) ASC,
-         COALESCE(d.contra_horario, d.horario_sugerido) ASC
+         COALESCE(d.contra_data, d.data_sugerida)::text ASC,
+         LEFT(COALESCE(d.contra_horario, d.horario_sugerido)::text, 5) ASC
        LIMIT 80`,
-      [p.user_id],
+      [p.user_id, hoje, horaAtual],
     );
 
-    res.json({
-      data: r.rows.map(row => ({
-        ...row,
-        horarioInicio: String(row.horarioInicio).slice(0, 5),
-        horarioFim: String(row.horarioFim).slice(0, 5),
-      })),
-    });
+    res.json({ data: r.rows });
   } catch (e) {
     console.error('[GET /ranking/atividades]', e);
     res.status(500).json({ error: 'Erro ao carregar desafios aceitos.' });
