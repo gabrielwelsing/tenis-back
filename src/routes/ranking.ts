@@ -16,8 +16,17 @@ const JWT_SECRET = process.env.JWT_SECRET ?? 'floquinho1@';
 function getAuth(req: Request): { user_id: number; role: string } | null {
   const auth = req.headers.authorization;
   if (!auth?.startsWith('Bearer ')) return null;
+
   try {
-    return jwt.verify(auth.slice(7), JWT_SECRET) as { user_id: number; role: string };
+    const payload = jwt.verify(auth.slice(7), JWT_SECRET) as any;
+    const userId = Number(payload.user_id ?? payload.id);
+
+    if (!Number.isFinite(userId)) return null;
+
+    return {
+      user_id: userId,
+      role: String(payload.role ?? ''),
+    };
   } catch {
     return null;
   }
@@ -525,7 +534,11 @@ router.patch('/partidas/:id/confirmar', async (req: Request, res: Response) => {
   if (!partida.rows.length) return res.status(404).json({ error: 'Partida não encontrada.' });
 
   const pd = partida.rows[0];
-  if (pd.jogador_a_id !== p.user_id && pd.jogador_b_id !== p.user_id)
+  const jogadorAId = Number(pd.jogador_a_id);
+  const jogadorBId = Number(pd.jogador_b_id);
+  const userId     = Number(p.user_id);
+
+  if (jogadorAId !== userId && jogadorBId !== userId)
     return res.status(403).json({ error: 'Você não é um dos jogadores desta partida.' });
 
   const { confirmar } = req.body;
@@ -539,7 +552,7 @@ router.patch('/partidas/:id/confirmar', async (req: Request, res: Response) => {
   }
 
   // Marca confirmação do jogador atual
-  const isA = pd.jogador_a_id === p.user_id;
+  const isA = jogadorAId === userId;
   const col  = isA ? 'confirmado_a' : 'confirmado_b';
   await pool.query(`UPDATE partidas SET ${col}=true WHERE id=$1`, [String(req.params.id)]);
 
