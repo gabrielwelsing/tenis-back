@@ -536,5 +536,73 @@ router.get('/proxima', async (req: Request, res: Response) => {
   }
 });
 
+// GET /agenda/atividades?email=&role= — lista aulas confirmadas futuras e anteriores para a Home
+router.get('/atividades', async (req: Request, res: Response) => {
+  const email = (req.query.email as string | undefined)?.trim();
+  const role  = (req.query.role as string | undefined)?.trim();
+
+  if (!email) {
+    return res.status(400).json({ error: 'email obrigatório.' });
+  }
+
+  const isAdmin = role === 'admin';
+
+  try {
+    const result = await pool.query(
+      `SELECT
+          ('agenda-' || i.id::text) AS id,
+          i.id AS "origemId",
+          'aula' AS tipo,
+          i.data::text AS "dataInicio",
+          NULL::text AS "dataFim",
+          i.hora_inicio::text AS "horarioInicio",
+          i.hora_fim::text AS "horarioFim",
+          'Agenda do Prof. Carlão' AS local,
+          CASE
+            WHEN $2::boolean THEN ('Aula com ' || COALESCE(i.nome_aluno, split_part(i.email_aluno, '@', 1), 'aluno'))
+            ELSE 'Aula com Prof. Carlão'
+          END AS titulo,
+          CASE
+            WHEN $2::boolean THEN i.email_aluno
+            ELSE i.admin_email
+          END AS "pessoaEmail",
+          CASE
+            WHEN $2::boolean THEN COALESCE(i.nome_aluno, split_part(i.email_aluno, '@', 1), 'aluno')
+            ELSE 'Prof. Carlão'
+          END AS "pessoaNome",
+          i.status,
+          CASE
+            WHEN i.data < CURRENT_DATE
+              OR (i.data = CURRENT_DATE AND i.hora_fim <= NOW()::TIME)
+            THEN true
+            ELSE false
+          END AS passado
+       FROM agenda_inscricoes i
+       WHERE ${isAdmin ? 'LOWER(i.admin_email) = LOWER($1)' : 'LOWER(i.email_aluno) = LOWER($1)'}
+         AND i.status = 'confirmada'
+       ORDER BY
+         CASE
+           WHEN i.data < CURRENT_DATE
+             OR (i.data = CURRENT_DATE AND i.hora_fim <= NOW()::TIME)
+           THEN 1
+           ELSE 0
+         END,
+         i.data ASC,
+         i.hora_inicio ASC
+       LIMIT 80`,
+      [email, isAdmin]
+    );
+
+    res.json(result.rows.map(row => ({
+      ...row,
+      horarioInicio: String(row.horarioInicio).slice(0, 5),
+      horarioFim: String(row.horarioFim).slice(0, 5),
+    })));
+  } catch (e) {
+    console.error('[GET /agenda/atividades]', e);
+    res.status(500).json({ error: 'Erro ao carregar atividades da agenda.' });
+  }
+});
+
 
 export { router as agendaRouter };
