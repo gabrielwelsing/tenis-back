@@ -21,6 +21,7 @@ function normalizarJogo(row: any) {
 // ---------------------------------------------------------------------------
 router.get('/', async (req: Request, res: Response) => {
   const cidade = (req.query.cidade as string | undefined)?.trim();
+  const incluirHistorico = req.query.historico === '1' || req.query.historico === 'true';
   const agora  = new Date();
   const hoje   = agora.toISOString().split('T')[0];
   const horaAtual = agora.toTimeString().slice(0, 5); // HH:MM
@@ -38,19 +39,32 @@ router.get('/', async (req: Request, res: Response) => {
        LEFT JOIN users u
          ON LOWER(u.email) = LOWER(j."emailPublicador")
        WHERE ($1::text IS NULL OR LOWER(j.cidade) = LOWER($1))
-         AND j.status != 'encerrada'
          AND (
-           (j."dataFim" IS NOT NULL AND j."dataFim" > $2)
-           OR
-           (j."dataFim" IS NULL AND j."dataInicio" > $2)
-           OR
-           (
-             (j."dataFim" = $2 OR (j."dataFim" IS NULL AND j."dataInicio" = $2))
-             AND j."horarioFim" > $3
+           $4::boolean = true
+           OR (
+             j.status IN ('aberta', 'confirmada')
+             AND (
+               (j."dataFim" IS NOT NULL AND j."dataFim" > $2)
+               OR
+               (j."dataFim" IS NULL AND j."dataInicio" > $2)
+               OR
+               (
+                 (j."dataFim" = $2 OR (j."dataFim" IS NULL AND j."dataInicio" = $2))
+                 AND j."horarioFim" > $3
+               )
+             )
            )
          )
-       ORDER BY j."publicadoEm" DESC`,
-      [cidade || null, hoje, horaAtual]
+       ORDER BY
+         CASE
+           WHEN j.status IN ('cancelada', 'encerrada')
+             OR COALESCE(j."dataFim", j."dataInicio") < $2
+             OR (COALESCE(j."dataFim", j."dataInicio") = $2 AND j."horarioFim" <= $3)
+           THEN 1
+           ELSE 0
+         END,
+         j."publicadoEm" DESC`,
+      [cidade || null, hoje, horaAtual, incluirHistorico]
     );
 
     res.json(result.rows.map(normalizarJogo));
@@ -177,7 +191,8 @@ router.get('/atividades', async (req: Request, res: Response) => {
           END AS "pessoaNome",
           j.status,
           CASE
-            WHEN COALESCE(j."dataFim", j."dataInicio") < CURRENT_DATE
+            WHEN j.status IN ('cancelada', 'encerrada')
+              OR COALESCE(j."dataFim", j."dataInicio") < CURRENT_DATE
               OR (COALESCE(j."dataFim", j."dataInicio") = CURRENT_DATE AND j."horarioFim" <= NOW()::TIME)
             THEN true
             ELSE false
@@ -187,14 +202,15 @@ router.get('/atividades', async (req: Request, res: Response) => {
          ON LOWER(u_publicador.email) = LOWER(j."emailPublicador")
        LEFT JOIN users u_confirmado
          ON LOWER(u_confirmado.email) = LOWER(j.confirmado_com)
-       WHERE j.status IN ('confirmada', 'encerrada')
+       WHERE j.status IN ('confirmada', 'encerrada', 'cancelada')
          AND (
            LOWER(j."emailPublicador") = LOWER($1)
            OR LOWER(j.confirmado_com) = LOWER($1)
          )
        ORDER BY
          CASE
-           WHEN COALESCE(j."dataFim", j."dataInicio") < CURRENT_DATE
+           WHEN j.status IN ('cancelada', 'encerrada')
+             OR COALESCE(j."dataFim", j."dataInicio") < CURRENT_DATE
              OR (COALESCE(j."dataFim", j."dataInicio") = CURRENT_DATE AND j."horarioFim" <= NOW()::TIME)
            THEN 1
            ELSE 0
@@ -435,6 +451,81 @@ router.delete('/:id', async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Erro ao remover publicação.' });
   }
 });
+
+
+// ---------------------------------------------------------------------------
+// PATCH /jogos/:id/cancelar — cancela partida confirmada sem apagar histórico
+// Pode cancelar: dono da publicação ou jogador confirmado
+// ---------------------------------------------------------------------------
+router.patch('/:id/cancelar', async (req: Request, res: Response) => {
+  const emailUsuario = (req.body.email_usuario as string | undefined)?.trim();
+
+  if (!emailUsuario) {
+    return res.status(400).json({ error: 'email_usuario obrigatório.' });
+  }
+
+  try {
+    const jogo = await pool.query(
+      `SELECT id, status, "emailPublicador", confirmado_com
+       FROM jogos
+       WHERE id = $1`,
+      [req.params.id]
+    );
+
+    if (!jogo.rows.length) {
+      return res.status(404).json({ error: 'Partida não encontrada.' });
+    }
+
+    const row = jogo.rows[0];
+    const emailLower = String(emailUsuario).toLowerCase();
+    const isDono = String(row.emailPublicador || '').toLowerCase() === emailLower;
+    const isConfirmado = String(row.confirmado_com || '').toLowerCase() === emailLower;
+
+    if (row.status === 'cancelada') {
+      return res.status(409).json({ error: 'Partida já está cancelada.' });
+    }
+
+    if (row.status === 'encerrada') {
+      return res.status(409).json({ error: 'Partida encerrada não pode ser cancelada.' });
+    }
+
+    if (row.status === 'aberta' && !isDono) {
+      return res.status(403).json({ error: 'Somente o dono pode cancelar uma publicação aberta.' });
+    }
+
+    if (row.status === 'confirmada' && !isDono && !isConfirmado) {
+      return res.status(403).json({ error: 'Somente os participantes podem cancelar esta partida.' });
+    }
+
+    await pool.query(
+      `UPDATE jogos
+       SET status = 'cancelada'
+       WHERE id = $1`,
+      [req.params.id]
+    );
+
+    const atualizado = await pool.query(
+      `SELECT
+          j.*,
+          COALESCE(j.interessados, 0) AS interessados,
+          j.status,
+          j.confirmado_com,
+          COALESCE(u.nome, split_part(j."emailPublicador", '@', 1), 'Jogador') AS "nomePublicador",
+          u.foto_url AS "fotoPublicador"
+       FROM jogos j
+       LEFT JOIN users u
+         ON LOWER(u.email) = LOWER(j."emailPublicador")
+       WHERE j.id = $1`,
+      [req.params.id]
+    );
+
+    res.json(normalizarJogo(atualizado.rows[0]));
+  } catch (e) {
+    console.error('[PATCH /jogos/:id/cancelar]', e);
+    res.status(500).json({ error: 'Erro ao cancelar partida.' });
+  }
+});
+
 
 // ---------------------------------------------------------------------------
 // POST /jogos/:id/interessado — usuário clicou em WhatsApp
