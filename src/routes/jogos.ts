@@ -135,6 +135,88 @@ router.get('/proxima', async (req: Request, res: Response) => {
   }
 });
 
+
+// ---------------------------------------------------------------------------
+// GET /jogos/atividades?email=xxx — lista partidas confirmadas futuras e anteriores do usuário
+// ---------------------------------------------------------------------------
+router.get('/atividades', async (req: Request, res: Response) => {
+  const email = (req.query.email as string | undefined)?.trim();
+
+  if (!email) {
+    return res.status(400).json({ error: 'Email obrigatório.' });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT
+          ('jogo-' || j.id::text) AS id,
+          j.id AS "origemId",
+          'jogo' AS tipo,
+          j."dataInicio"::text AS "dataInicio",
+          j."dataFim"::text AS "dataFim",
+          j."horarioInicio"::text AS "horarioInicio",
+          j."horarioFim"::text AS "horarioFim",
+          j.local,
+          CASE
+            WHEN LOWER(j."emailPublicador") = LOWER($1)
+              THEN ('Jogo vs ' || COALESCE(u_confirmado.nome, split_part(j.confirmado_com, '@', 1), 'Adversário'))
+            ELSE
+              ('Jogo vs ' || COALESCE(u_publicador.nome, split_part(j."emailPublicador", '@', 1), 'Adversário'))
+          END AS titulo,
+          CASE
+            WHEN LOWER(j."emailPublicador") = LOWER($1)
+              THEN j.confirmado_com
+            ELSE
+              j."emailPublicador"
+          END AS "pessoaEmail",
+          CASE
+            WHEN LOWER(j."emailPublicador") = LOWER($1)
+              THEN COALESCE(u_confirmado.nome, split_part(j.confirmado_com, '@', 1), 'Adversário')
+            ELSE
+              COALESCE(u_publicador.nome, split_part(j."emailPublicador", '@', 1), 'Adversário')
+          END AS "pessoaNome",
+          j.status,
+          CASE
+            WHEN COALESCE(j."dataFim", j."dataInicio") < CURRENT_DATE
+              OR (COALESCE(j."dataFim", j."dataInicio") = CURRENT_DATE AND j."horarioFim" <= NOW()::TIME)
+            THEN true
+            ELSE false
+          END AS passado
+       FROM jogos j
+       LEFT JOIN users u_publicador
+         ON LOWER(u_publicador.email) = LOWER(j."emailPublicador")
+       LEFT JOIN users u_confirmado
+         ON LOWER(u_confirmado.email) = LOWER(j.confirmado_com)
+       WHERE j.status IN ('confirmada', 'encerrada')
+         AND (
+           LOWER(j."emailPublicador") = LOWER($1)
+           OR LOWER(j.confirmado_com) = LOWER($1)
+         )
+       ORDER BY
+         CASE
+           WHEN COALESCE(j."dataFim", j."dataInicio") < CURRENT_DATE
+             OR (COALESCE(j."dataFim", j."dataInicio") = CURRENT_DATE AND j."horarioFim" <= NOW()::TIME)
+           THEN 1
+           ELSE 0
+         END,
+         j."dataInicio" ASC,
+         j."horarioInicio" ASC
+       LIMIT 80`,
+      [email]
+    );
+
+    res.json(result.rows.map(row => ({
+      ...row,
+      horarioInicio: String(row.horarioInicio).slice(0, 5),
+      horarioFim: String(row.horarioFim).slice(0, 5),
+    })));
+  } catch (e) {
+    console.error('[GET /jogos/atividades]', e);
+    res.status(500).json({ error: 'Erro ao carregar atividades do mural.' });
+  }
+});
+
+
 // ---------------------------------------------------------------------------
 // POST /jogos — publica disponibilidade
 // ---------------------------------------------------------------------------
