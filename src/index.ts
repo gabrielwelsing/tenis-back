@@ -15,6 +15,13 @@ import { paymentRouter }  from './routes/paymentRoutes';
 const app  = express();
 const PORT = process.env.PORT ?? 3000;
 
+// ── COOP/COEP headers (necessário para Google OAuth popup) ──────────────────
+app.use((_req, res, next) => {
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+  res.setHeader('Cross-Origin-Embedder-Policy', 'unsafe-none');
+  next();
+});
+
 app.use(cors());
 app.use(express.json());
 
