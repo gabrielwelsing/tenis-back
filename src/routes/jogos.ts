@@ -24,7 +24,7 @@ router.get('/', async (req: Request, res: Response) => {
   const incluirHistorico = req.query.historico === '1' || req.query.historico === 'true';
   const agora  = new Date();
   const hoje   = agora.toISOString().split('T')[0];
-  const horaAtual = agora.toTimeString().slice(0, 5); // HH:MM
+  const horaAtual = agora.toTimeString().slice(0, 5);
 
   try {
     const result = await pool.query(
@@ -34,10 +34,13 @@ router.get('/', async (req: Request, res: Response) => {
           j.status,
           j.confirmado_com,
           COALESCE(u.nome, split_part(j."emailPublicador", '@', 1), 'Jogador') AS "nomePublicador",
-          u.foto_url AS "fotoPublicador"
+          u.foto_url AS "fotoPublicador",
+          COALESCE(u2.nome, split_part(COALESCE(j.confirmado_com, ''), '@', 1)) AS "nomeConfirmado"
        FROM jogos j
        LEFT JOIN users u
          ON LOWER(u.email) = LOWER(j."emailPublicador")
+       LEFT JOIN users u2
+         ON LOWER(u2.email) = LOWER(j.confirmado_com)
        WHERE ($1::text IS NULL OR LOWER(j.cidade) = LOWER($1))
          AND (
            $4::boolean = true
@@ -87,7 +90,7 @@ router.get('/proxima', async (req: Request, res: Response) => {
 
   const agora = new Date();
   const hoje = agora.toISOString().split('T')[0];
-  const horaAtual = agora.toTimeString().slice(0, 5); // HH:MM
+  const horaAtual = agora.toTimeString().slice(0, 5);
 
   try {
     const result = await pool.query(
@@ -162,7 +165,7 @@ router.get('/atividades', async (req: Request, res: Response) => {
 
   const agora = new Date();
   const hoje = agora.toISOString().split('T')[0];
-  const horaAtual = agora.toTimeString().slice(0, 5); // HH:MM
+  const horaAtual = agora.toTimeString().slice(0, 5);
 
   try {
     const result = await pool.query(
@@ -248,64 +251,23 @@ router.get('/atividades', async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 router.post('/', async (req: Request, res: Response) => {
   const {
-    id,
-    cidade,
-    classe,
-    dataInicio,
-    dataFim,
-    horarioInicio,
-    horarioFim,
-    local,
-    whatsapp,
-    publicadoEm,
-    emailPublicador,
+    id, cidade, classe, dataInicio, dataFim, horarioInicio,
+    horarioFim, local, whatsapp, publicadoEm, emailPublicador,
   } = req.body;
 
-  if (
-    !id ||
-    !cidade ||
-    !classe ||
-    !dataInicio ||
-    !horarioInicio ||
-    !horarioFim ||
-    !local ||
-    !whatsapp ||
-    !publicadoEm
-  ) {
+  if (!id || !cidade || !classe || !dataInicio || !horarioInicio ||
+      !horarioFim || !local || !whatsapp || !publicadoEm) {
     return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
   }
 
   try {
     await pool.query(
       `INSERT INTO jogos (
-          id,
-          cidade,
-          classe,
-          "dataInicio",
-          "dataFim",
-          "horarioInicio",
-          "horarioFim",
-          local,
-          whatsapp,
-          "publicadoEm",
-          "emailPublicador",
-          status,
-          interessados
-       )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'aberta',0)`,
-      [
-        id,
-        cidade,
-        classe,
-        dataInicio,
-        dataFim ?? null,
-        horarioInicio,
-        horarioFim,
-        local,
-        whatsapp,
-        BigInt(publicadoEm),
-        emailPublicador ?? null,
-      ]
+          id, cidade, classe, "dataInicio", "dataFim", "horarioInicio",
+          "horarioFim", local, whatsapp, "publicadoEm", "emailPublicador", status, interessados
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'aberta',0)`,
+      [id, cidade, classe, dataInicio, dataFim ?? null, horarioInicio,
+       horarioFim, local, whatsapp, BigInt(publicadoEm), emailPublicador ?? null]
     );
 
     const result = await pool.query(
@@ -315,10 +277,13 @@ router.post('/', async (req: Request, res: Response) => {
           j.status,
           j.confirmado_com,
           COALESCE(u.nome, split_part(j."emailPublicador", '@', 1), 'Jogador') AS "nomePublicador",
-          u.foto_url AS "fotoPublicador"
+          u.foto_url AS "fotoPublicador",
+          COALESCE(u2.nome, split_part(COALESCE(j.confirmado_com, ''), '@', 1)) AS "nomeConfirmado"
        FROM jogos j
        LEFT JOIN users u
          ON LOWER(u.email) = LOWER(j."emailPublicador")
+       LEFT JOIN users u2
+         ON LOWER(u2.email) = LOWER(j.confirmado_com)
        WHERE j.id = $1`,
       [id]
     );
@@ -334,66 +299,33 @@ router.post('/', async (req: Request, res: Response) => {
 // PATCH /jogos/:id/datas — dono edita somente datas/horários se não confirmada
 // ---------------------------------------------------------------------------
 router.patch('/:id/datas', async (req: Request, res: Response) => {
-  const {
-    emailPublicador,
-    dataInicio,
-    dataFim,
-    horarioInicio,
-    horarioFim,
-  } = req.body;
+  const { emailPublicador, dataInicio, dataFim, horarioInicio, horarioFim } = req.body;
 
-  if (!emailPublicador) {
-    return res.status(400).json({ error: 'emailPublicador obrigatório.' });
-  }
-
-  if (!dataInicio || !horarioInicio || !horarioFim) {
+  if (!emailPublicador) return res.status(400).json({ error: 'emailPublicador obrigatório.' });
+  if (!dataInicio || !horarioInicio || !horarioFim)
     return res.status(400).json({ error: 'Data inicial, horário inicial e horário final são obrigatórios.' });
-  }
-
-  if (dataFim && dataFim < dataInicio) {
+  if (dataFim && dataFim < dataInicio)
     return res.status(400).json({ error: 'Data final deve ser maior ou igual à data inicial.' });
-  }
-
-  if (horarioFim <= horarioInicio) {
+  if (horarioFim <= horarioInicio)
     return res.status(400).json({ error: 'Horário final deve ser após o horário inicial.' });
-  }
 
   try {
     const jogo = await pool.query(
-      `SELECT id, status, "emailPublicador"
-       FROM jogos
-       WHERE id = $1`,
+      `SELECT id, status, "emailPublicador" FROM jogos WHERE id = $1`,
       [req.params.id]
     );
 
-    if (!jogo.rows.length) {
-      return res.status(404).json({ error: 'Publicação não encontrada.' });
-    }
+    if (!jogo.rows.length) return res.status(404).json({ error: 'Publicação não encontrada.' });
 
     const row = jogo.rows[0];
-
-    if (!row.emailPublicador || row.emailPublicador.toLowerCase() !== String(emailPublicador).toLowerCase()) {
+    if (!row.emailPublicador || row.emailPublicador.toLowerCase() !== String(emailPublicador).toLowerCase())
       return res.status(403).json({ error: 'Sem permissão.' });
-    }
-
-    if (row.status === 'confirmada') {
+    if (row.status === 'confirmada')
       return res.status(409).json({ error: 'Partida confirmada não pode ser editada.' });
-    }
 
     await pool.query(
-      `UPDATE jogos
-       SET "dataInicio" = $1,
-           "dataFim" = $2,
-           "horarioInicio" = $3,
-           "horarioFim" = $4
-       WHERE id = $5`,
-      [
-        dataInicio,
-        dataFim ?? null,
-        horarioInicio,
-        horarioFim,
-        req.params.id,
-      ]
+      `UPDATE jogos SET "dataInicio"=$1, "dataFim"=$2, "horarioInicio"=$3, "horarioFim"=$4 WHERE id=$5`,
+      [dataInicio, dataFim ?? null, horarioInicio, horarioFim, req.params.id]
     );
 
     const atualizado = await pool.query(
@@ -403,10 +335,13 @@ router.patch('/:id/datas', async (req: Request, res: Response) => {
           j.status,
           j.confirmado_com,
           COALESCE(u.nome, split_part(j."emailPublicador", '@', 1), 'Jogador') AS "nomePublicador",
-          u.foto_url AS "fotoPublicador"
+          u.foto_url AS "fotoPublicador",
+          COALESCE(u2.nome, split_part(COALESCE(j.confirmado_com, ''), '@', 1)) AS "nomeConfirmado"
        FROM jogos j
        LEFT JOIN users u
          ON LOWER(u.email) = LOWER(j."emailPublicador")
+       LEFT JOIN users u2
+         ON LOWER(u2.email) = LOWER(j.confirmado_com)
        WHERE j.id = $1`,
       [req.params.id]
     );
@@ -424,36 +359,23 @@ router.patch('/:id/datas', async (req: Request, res: Response) => {
 router.delete('/:id', async (req: Request, res: Response) => {
   const { emailPublicador } = req.body;
 
-  if (!emailPublicador) {
-    return res.status(400).json({ error: 'emailPublicador obrigatório.' });
-  }
+  if (!emailPublicador) return res.status(400).json({ error: 'emailPublicador obrigatório.' });
 
   try {
     const jogo = await pool.query(
-      `SELECT id, status, "emailPublicador"
-       FROM jogos
-       WHERE id = $1`,
+      `SELECT id, status, "emailPublicador" FROM jogos WHERE id = $1`,
       [req.params.id]
     );
 
-    if (!jogo.rows.length) {
-      return res.status(404).json({ error: 'Publicação não encontrada.' });
-    }
+    if (!jogo.rows.length) return res.status(404).json({ error: 'Publicação não encontrada.' });
 
     const row = jogo.rows[0];
-
-    if (!row.emailPublicador || row.emailPublicador.toLowerCase() !== String(emailPublicador).toLowerCase()) {
+    if (!row.emailPublicador || row.emailPublicador.toLowerCase() !== String(emailPublicador).toLowerCase())
       return res.status(403).json({ error: 'Sem permissão.' });
-    }
-
-    if (row.status === 'confirmada') {
+    if (row.status === 'confirmada')
       return res.status(409).json({ error: 'Partida confirmada não pode ser excluída.' });
-    }
 
-    await pool.query(
-      `DELETE FROM jogos WHERE id = $1`,
-      [req.params.id]
-    );
+    await pool.query(`DELETE FROM jogos WHERE id = $1`, [req.params.id]);
 
     res.json({ ok: true });
   } catch (e) {
@@ -465,54 +387,31 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
 // ---------------------------------------------------------------------------
 // PATCH /jogos/:id/cancelar — cancela partida confirmada sem apagar histórico
-// Pode cancelar: dono da publicação ou jogador confirmado
 // ---------------------------------------------------------------------------
 router.patch('/:id/cancelar', async (req: Request, res: Response) => {
   const emailUsuario = (req.body.email_usuario as string | undefined)?.trim();
 
-  if (!emailUsuario) {
-    return res.status(400).json({ error: 'email_usuario obrigatório.' });
-  }
+  if (!emailUsuario) return res.status(400).json({ error: 'email_usuario obrigatório.' });
 
   try {
     const jogo = await pool.query(
-      `SELECT id, status, "emailPublicador", confirmado_com
-       FROM jogos
-       WHERE id = $1`,
+      `SELECT id, status, "emailPublicador", confirmado_com FROM jogos WHERE id = $1`,
       [req.params.id]
     );
 
-    if (!jogo.rows.length) {
-      return res.status(404).json({ error: 'Partida não encontrada.' });
-    }
+    if (!jogo.rows.length) return res.status(404).json({ error: 'Partida não encontrada.' });
 
     const row = jogo.rows[0];
     const emailLower = String(emailUsuario).toLowerCase();
     const isDono = String(row.emailPublicador || '').toLowerCase() === emailLower;
     const isConfirmado = String(row.confirmado_com || '').toLowerCase() === emailLower;
 
-    if (row.status === 'cancelada') {
-      return res.status(409).json({ error: 'Partida já está cancelada.' });
-    }
+    if (row.status === 'cancelada') return res.status(409).json({ error: 'Partida já está cancelada.' });
+    if (row.status === 'encerrada') return res.status(409).json({ error: 'Partida encerrada não pode ser cancelada.' });
+    if (row.status === 'aberta' && !isDono) return res.status(403).json({ error: 'Somente o dono pode cancelar uma publicação aberta.' });
+    if (row.status === 'confirmada' && !isDono && !isConfirmado) return res.status(403).json({ error: 'Somente os participantes podem cancelar esta partida.' });
 
-    if (row.status === 'encerrada') {
-      return res.status(409).json({ error: 'Partida encerrada não pode ser cancelada.' });
-    }
-
-    if (row.status === 'aberta' && !isDono) {
-      return res.status(403).json({ error: 'Somente o dono pode cancelar uma publicação aberta.' });
-    }
-
-    if (row.status === 'confirmada' && !isDono && !isConfirmado) {
-      return res.status(403).json({ error: 'Somente os participantes podem cancelar esta partida.' });
-    }
-
-    await pool.query(
-      `UPDATE jogos
-       SET status = 'cancelada'
-       WHERE id = $1`,
-      [req.params.id]
-    );
+    await pool.query(`UPDATE jogos SET status = 'cancelada' WHERE id = $1`, [req.params.id]);
 
     const atualizado = await pool.query(
       `SELECT
@@ -521,10 +420,13 @@ router.patch('/:id/cancelar', async (req: Request, res: Response) => {
           j.status,
           j.confirmado_com,
           COALESCE(u.nome, split_part(j."emailPublicador", '@', 1), 'Jogador') AS "nomePublicador",
-          u.foto_url AS "fotoPublicador"
+          u.foto_url AS "fotoPublicador",
+          COALESCE(u2.nome, split_part(COALESCE(j.confirmado_com, ''), '@', 1)) AS "nomeConfirmado"
        FROM jogos j
        LEFT JOIN users u
          ON LOWER(u.email) = LOWER(j."emailPublicador")
+       LEFT JOIN users u2
+         ON LOWER(u2.email) = LOWER(j.confirmado_com)
        WHERE j.id = $1`,
       [req.params.id]
     );
@@ -543,15 +445,13 @@ router.patch('/:id/cancelar', async (req: Request, res: Response) => {
 router.post('/:id/interessado', async (req: Request, res: Response) => {
   const { email_usuario, nome_usuario } = req.body;
 
-  if (!email_usuario || !nome_usuario) {
+  if (!email_usuario || !nome_usuario)
     return res.status(400).json({ error: 'email_usuario e nome_usuario obrigatórios.' });
-  }
 
   try {
     await pool.query(
       `INSERT INTO jogo_interessados (jogo_id, email_usuario, nome_usuario)
-       VALUES ($1,$2,$3)
-       ON CONFLICT (jogo_id, email_usuario) DO NOTHING`,
+       VALUES ($1,$2,$3) ON CONFLICT (jogo_id, email_usuario) DO NOTHING`,
       [req.params.id, email_usuario, nome_usuario]
     );
 
@@ -562,11 +462,7 @@ router.post('/:id/interessado', async (req: Request, res: Response) => {
       [req.params.id]
     );
 
-    const jogo = await pool.query(
-      `SELECT interessados FROM jogos WHERE id=$1`,
-      [req.params.id]
-    );
-
+    const jogo = await pool.query(`SELECT interessados FROM jogos WHERE id=$1`, [req.params.id]);
     res.json({ interessados: jogo.rows[0]?.interessados ?? 0 });
   } catch (e) {
     console.error('[POST /jogos/:id/interessado]', e);
@@ -581,24 +477,14 @@ router.get('/:id/interessados', async (req: Request, res: Response) => {
   const { email_publicador } = req.query as Record<string, string>;
 
   try {
-    const jogo = await pool.query(
-      `SELECT "emailPublicador" FROM jogos WHERE id=$1`,
-      [req.params.id]
-    );
+    const jogo = await pool.query(`SELECT "emailPublicador" FROM jogos WHERE id=$1`, [req.params.id]);
 
-    if (!jogo.rows.length) {
-      return res.status(404).json({ error: 'Jogo não encontrado.' });
-    }
-
-    if (jogo.rows[0].emailPublicador !== email_publicador) {
-      return res.status(403).json({ error: 'Sem permissão.' });
-    }
+    if (!jogo.rows.length) return res.status(404).json({ error: 'Jogo não encontrado.' });
+    if (jogo.rows[0].emailPublicador !== email_publicador) return res.status(403).json({ error: 'Sem permissão.' });
 
     const result = await pool.query(
       `SELECT email_usuario, nome_usuario, created_at
-       FROM jogo_interessados
-       WHERE jogo_id=$1
-       ORDER BY created_at`,
+       FROM jogo_interessados WHERE jogo_id=$1 ORDER BY created_at`,
       [req.params.id]
     );
 
@@ -615,29 +501,17 @@ router.get('/:id/interessados', async (req: Request, res: Response) => {
 router.patch('/:id/confirmar', async (req: Request, res: Response) => {
   const { email_publicador, confirmado_com } = req.body;
 
-  if (!email_publicador || !confirmado_com) {
+  if (!email_publicador || !confirmado_com)
     return res.status(400).json({ error: 'email_publicador e confirmado_com obrigatórios.' });
-  }
 
   try {
-    const jogo = await pool.query(
-      `SELECT "emailPublicador" FROM jogos WHERE id=$1`,
-      [req.params.id]
-    );
+    const jogo = await pool.query(`SELECT "emailPublicador" FROM jogos WHERE id=$1`, [req.params.id]);
 
-    if (!jogo.rows.length) {
-      return res.status(404).json({ error: 'Jogo não encontrado.' });
-    }
-
-    if (jogo.rows[0].emailPublicador !== email_publicador) {
-      return res.status(403).json({ error: 'Sem permissão.' });
-    }
+    if (!jogo.rows.length) return res.status(404).json({ error: 'Jogo não encontrado.' });
+    if (jogo.rows[0].emailPublicador !== email_publicador) return res.status(403).json({ error: 'Sem permissão.' });
 
     await pool.query(
-      `UPDATE jogos
-       SET status='confirmada',
-           confirmado_com=$1
-       WHERE id=$2`,
+      `UPDATE jogos SET status='confirmada', confirmado_com=$1 WHERE id=$2`,
       [confirmado_com, req.params.id]
     );
 
@@ -654,28 +528,15 @@ router.patch('/:id/confirmar', async (req: Request, res: Response) => {
 router.patch('/:id/encerrar', async (req: Request, res: Response) => {
   const { email_publicador } = req.body;
 
-  if (!email_publicador) {
-    return res.status(400).json({ error: 'email_publicador obrigatório.' });
-  }
+  if (!email_publicador) return res.status(400).json({ error: 'email_publicador obrigatório.' });
 
   try {
-    const jogo = await pool.query(
-      `SELECT "emailPublicador" FROM jogos WHERE id=$1`,
-      [req.params.id]
-    );
+    const jogo = await pool.query(`SELECT "emailPublicador" FROM jogos WHERE id=$1`, [req.params.id]);
 
-    if (!jogo.rows.length) {
-      return res.status(404).json({ error: 'Jogo não encontrado.' });
-    }
+    if (!jogo.rows.length) return res.status(404).json({ error: 'Jogo não encontrado.' });
+    if (jogo.rows[0].emailPublicador !== email_publicador) return res.status(403).json({ error: 'Sem permissão.' });
 
-    if (jogo.rows[0].emailPublicador !== email_publicador) {
-      return res.status(403).json({ error: 'Sem permissão.' });
-    }
-
-    await pool.query(
-      `UPDATE jogos SET status='encerrada' WHERE id=$1`,
-      [req.params.id]
-    );
+    await pool.query(`UPDATE jogos SET status='encerrada' WHERE id=$1`, [req.params.id]);
 
     res.json({ ok: true });
   } catch (e) {
