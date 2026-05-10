@@ -1,235 +1,224 @@
-// =============================================================================
-// QUADRAS ROUTER — v2
-// Locais, disponibilidade, slots, reservas (aprovação + fila), bloqueios
-// =============================================================================
-
 import { Router, Request, Response } from 'express';
 import { Pool } from 'pg';
 
 const router = Router();
 const pool   = new Pool({ connectionString: process.env.DATABASE_URL });
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function gerarSlots30(hi: string, hf: string): string[] {
-  const [sh, sm] = hi.split(':').map(Number);
-  const [eh, em] = hf.split(':').map(Number);
-  const slots: string[] = [];
-  let cur = sh * 60 + sm;
-  const end = eh * 60 + em;
-  while (cur < end) {
-    slots.push(`${String(Math.floor(cur / 60)).padStart(2,'0')}:${String(cur % 60).padStart(2,'0')}`);
-    cur += 30;
-  }
-  return slots;
+function allStandardSlots(): string[] {
+  return Array.from({ length: 32 }, (_, i) => {
+    const total = 7 * 60 + i * 30;
+    return `${String(Math.floor(total / 60)).padStart(2,'0')}:${String(total % 60).padStart(2,'0')}`;
+  });
 }
 
-function intToTime(h: number): string {
-  return `${String(h).padStart(2,'0')}:00`;
-}
-
-// =============================================================================
-// LOCAIS
-// =============================================================================
-
-// GET /quadras/locais/todos — público
-router.get('/locais/todos', async (_req: Request, res: Response) => {
-  try {
-    const result = await pool.query(
-      `SELECT l.id, l.nome, l.endereco, l.observacao, l.socios_only,
-              COALESCE(json_agg(
-                json_build_object('id',q.id,'nome',q.nome,'preco_hora',q.preco_hora)
-              ) FILTER (WHERE q.id IS NOT NULL), '[]') AS quadras
-       FROM locais l
-       LEFT JOIN quadras q ON q.local_id = l.id AND q.ativa = true
-       WHERE l.ativo = true
-       GROUP BY l.id ORDER BY l.id`
-    );
-    res.json(result.rows);
-  } catch { res.status(500).json({ error: 'Erro ao buscar locais.' }); }
-});
-
-// GET /quadras/locais — admin
-router.get('/locais', async (req: Request, res: Response) => {
-  const { admin_email } = req.query as Record<string, string>;
-  if (!admin_email) return res.status(400).json({ error: 'admin_email obrigatório.' });
+// GET /quadras/locais/todos
+router.get('/locais/todos', async (req: Request, res: Response) => {
   const result = await pool.query(
-    `SELECT l.*,
-            COALESCE(json_agg(q.*) FILTER (WHERE q.id IS NOT NULL), '[]') AS quadras
-     FROM locais l
-     LEFT JOIN quadras q ON q.local_id = l.id AND q.ativa = true
-     WHERE l.admin_email = $1 AND l.ativo = true
-     GROUP BY l.id ORDER BY l.created_at`,
-    [admin_email]
+    `SELECT l.*, COALESCE(json_agg(q ORDER BY q.id) FILTER (WHERE q.id IS NOT NULL), '[]') AS quadras
+     FROM locais l LEFT JOIN quadras q ON q.local_id = l.id
+     GROUP BY l.id ORDER BY l.id`
   );
   res.json(result.rows);
 });
 
-// POST /quadras/locais
-router.post('/locais', async (req: Request, res: Response) => {
-  const { admin_email, nome, endereco, observacao, socios_only } = req.body;
-  if (!admin_email || !nome) return res.status(400).json({ error: 'admin_email e nome obrigatórios.' });
-  const result = await pool.query(
-    `INSERT INTO locais (admin_email, nome, endereco, observacao, socios_only)
-     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-    [admin_email, nome, endereco ?? null, observacao ?? null, socios_only ?? false]
-  );
-  res.status(201).json(result.rows[0]);
-});
-
-// =============================================================================
-// DISPONIBILIDADE
-// =============================================================================
-
-// GET /quadras/:id/disponibilidade/config — config atual (ANTES do genérico)
-router.get('/:id/disponibilidade/config', async (req: Request, res: Response) => {
-  const result = await pool.query(
-    `SELECT * FROM quadra_disponibilidade WHERE quadra_id=$1`,
-    [req.params.id]
-  );
-  res.json(result.rows);
-});
-
-// POST /quadras/disponibilidade — admin salva
-router.post('/disponibilidade', async (req: Request, res: Response) => {
-  const { quadra_id, dias_semana, hi_text, hf_text } = req.body;
-  if (!quadra_id || !dias_semana || !hi_text || !hf_text)
-    return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
-
-  const hora_inicio = parseInt(hi_text.split(':')[0]);
-  const hora_fim    = parseInt(hf_text.split(':')[0]);
-
-  await pool.query(`DELETE FROM quadra_disponibilidade WHERE quadra_id=$1`, [quadra_id]);
-  const result = await pool.query(
-    `INSERT INTO quadra_disponibilidade (quadra_id, dias_semana, hora_inicio, hora_fim, hi_text, hf_text)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [quadra_id, dias_semana, hora_inicio, hora_fim, hi_text, hf_text]
-  );
-  res.status(201).json(result.rows[0]);
-});
-
-// DELETE /quadras/disponibilidade/:id
-router.delete('/disponibilidade/:id', async (req: Request, res: Response) => {
-  await pool.query(`DELETE FROM quadra_disponibilidade WHERE id=$1`, [req.params.id]);
-  res.json({ ok: true });
-});
-
-// =============================================================================
-// SLOTS — visualização 30min para uma data
-// =============================================================================
-
-// GET /quadras/:id/slots?data=YYYY-MM-DD
+// GET /quadras/:id/slots?data=
 router.get('/:id/slots', async (req: Request, res: Response) => {
-  const { data } = req.query as Record<string, string>;
+  const quadraId = Number(req.params.id);
+  const { data }  = req.query as Record<string, string>;
   if (!data) return res.status(400).json({ error: 'data obrigatória.' });
 
   const dow = new Date(data + 'T12:00:00').getDay();
 
-  const disp = await pool.query(
-    `SELECT * FROM quadra_disponibilidade WHERE quadra_id=$1 AND $2 = ANY(dias_semana)`,
-    [req.params.id, dow]
+  const slotsSemanais = await pool.query(
+    `SELECT hora FROM quadra_slots_semanais WHERE quadra_id=$1 AND dia_semana=$2 ORDER BY hora`,
+    [quadraId, dow]
+  );
+  if (!slotsSemanais.rows.length) return res.json({ slots: [] });
+
+  const reservas = await pool.query(
+    `SELECT hora_inicio, hora_fim, status FROM quadra_reservas
+     WHERE quadra_id=$1 AND data=$2 AND status NOT IN ('cancelada')`,
+    [quadraId, data]
   );
 
-  if (!disp.rows.length) return res.json({ disponivel: false, slots: [] });
+  const bloqueios = await pool.query(
+    `SELECT hi_text, hf_text FROM quadra_bloqueios WHERE quadra_id=$1 AND data=$2`,
+    [quadraId, data]
+  );
 
-  const row = disp.rows[0];
-  const hi  = row.hi_text || intToTime(row.hora_inicio);
-  const hf  = row.hf_text || intToTime(row.hora_fim);
-  if (!hi || !hf) return res.json({ disponivel: false, slots: [] });
+  const fixos = await pool.query(
+    `SELECT hora_inicio, hora_fim FROM agenda_horarios_fixos
+     WHERE nome IS NOT NULL AND ativo=true AND dia_semana=$1
+       AND (valido_de IS NULL OR valido_de::date <= $2::date)
+       AND (valido_ate IS NULL OR valido_ate::date >= $2::date)`,
+    [dow, data]
+  );
 
-  const todosSlots = gerarSlots30(hi, hf);
+  const slots = slotsSemanais.rows.map((s: any) => {
+    const hora = s.hora;
 
-  const [reservas, bloqueios] = await Promise.all([
-    pool.query(
-      `SELECT hora_inicio, hora_fim, status FROM quadra_reservas
-       WHERE quadra_id=$1 AND data=$2 AND status NOT IN ('cancelada')`,
-      [req.params.id, data]
-    ),
-    pool.query(
-      `SELECT hi_text, hf_text, hora_inicio, hora_fim FROM quadra_bloqueios
-       WHERE quadra_id=$1 AND data=$2`,
-      [req.params.id, data]
-    ),
-  ]);
-
-  const slotStatus: Record<string, string> = {};
-
-  bloqueios.rows.forEach(b => {
-    const bHi = b.hi_text || intToTime(b.hora_inicio);
-    const bHf = b.hf_text || intToTime(b.hora_fim);
-    if (bHi && bHf) gerarSlots30(bHi, bHf).forEach(s => { slotStatus[s] = 'bloqueado'; });
-  });
-
-  reservas.rows.forEach(r => {
-    if (!r.hora_inicio || !r.hora_fim) return;
-    gerarSlots30(r.hora_inicio, r.hora_fim).forEach(s => {
-      if (!slotStatus[s]) slotStatus[s] = r.status;
+    const isBloqueado = bloqueios.rows.some((b: any) => {
+      const hi = (b.hi_text || '00:00').slice(0, 5);
+      const hf = (b.hf_text || '23:59').slice(0, 5);
+      return hora >= hi && hora < hf;
     });
+    if (isBloqueado) return { hora_inicio: hora, status: 'bloqueado' };
+
+    const isFixo = fixos.rows.some((f: any) => {
+      const fHi = String(f.hora_inicio).slice(0, 5);
+      const fHf = String(f.hora_fim).slice(0, 5);
+      return hora >= fHi && hora < fHf;
+    });
+    if (isFixo) return { hora_inicio: hora, status: 'bloqueado' };
+
+    const reservasSlot = reservas.rows.filter((r: any) => {
+      const rHi = String(r.hora_inicio).slice(0, 5);
+      const rHf = String(r.hora_fim).slice(0, 5);
+      return hora >= rHi && hora < rHf;
+    });
+    if (reservasSlot.some((r: any) => r.status === 'confirmada'))  return { hora_inicio: hora, status: 'confirmada' };
+    if (reservasSlot.some((r: any) => r.status === 'fila_espera')) return { hora_inicio: hora, status: 'fila_espera' };
+    if (reservasSlot.length > 0)                                   return { hora_inicio: hora, status: 'pendente' };
+
+    return { hora_inicio: hora, status: 'livre' };
   });
 
-  const result = todosSlots.map(s => ({
-    hora_inicio: s,
-    status: slotStatus[s] || 'livre',
-  }));
-
-  res.json({ disponivel: true, slots: result, hi, hf });
+  res.json({ slots });
 });
 
-// =============================================================================
-// RESERVAS
-// =============================================================================
+// GET /quadras/:id/slots-semanais
+router.get('/:id/slots-semanais', async (req: Request, res: Response) => {
+  const result = await pool.query(
+    `SELECT * FROM quadra_slots_semanais WHERE quadra_id=$1 ORDER BY dia_semana, hora`,
+    [Number(req.params.id)]
+  );
+  res.json(result.rows);
+});
 
-// GET /quadras/:id/reservas/admin — admin vê tudo (ANTES do genérico)
+// POST /quadras/slots-semanais — add single slot
+router.post('/slots-semanais', async (req: Request, res: Response) => {
+  const { quadra_id, dia_semana, hora } = req.body;
+  if (!quadra_id || dia_semana === undefined || !hora)
+    return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
+  try {
+    const result = await pool.query(
+      `INSERT INTO quadra_slots_semanais (quadra_id, dia_semana, hora) VALUES ($1,$2,$3) RETURNING *`,
+      [quadra_id, dia_semana, hora]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (e: any) {
+    if (e.code === '23505') return res.status(409).json({ error: 'Slot já existe.' });
+    throw e;
+  }
+});
+
+// POST /quadras/slots-semanais/bulk — restore all standard slots for a day
+router.post('/slots-semanais/bulk', async (req: Request, res: Response) => {
+  const { quadra_id, dia_semana } = req.body;
+  if (!quadra_id || dia_semana === undefined)
+    return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
+  for (const hora of allStandardSlots()) {
+    await pool.query(
+      `INSERT INTO quadra_slots_semanais (quadra_id, dia_semana, hora) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+      [quadra_id, dia_semana, hora]
+    );
+  }
+  res.json({ ok: true });
+});
+
+// DELETE /quadras/slots-semanais/:id
+router.delete('/slots-semanais/:id', async (req: Request, res: Response) => {
+  await pool.query(`DELETE FROM quadra_slots_semanais WHERE id=$1`, [req.params.id]);
+  res.json({ ok: true });
+});
+
+// GET /quadras/:id/disponibilidade/config (mantido para compatibilidade)
+router.get('/:id/disponibilidade/config', async (req: Request, res: Response) => {
+  const result = await pool.query(
+    `SELECT * FROM quadra_disponibilidade WHERE quadra_id=$1 ORDER BY id DESC LIMIT 1`,
+    [Number(req.params.id)]
+  );
+  res.json(result.rows);
+});
+
+// POST /quadras/disponibilidade (mantido para compatibilidade)
+router.post('/disponibilidade', async (req: Request, res: Response) => {
+  const { quadra_id, dias_semana, hi_text, hf_text } = req.body;
+  if (!quadra_id) return res.status(400).json({ error: 'quadra_id obrigatório.' });
+  const result = await pool.query(
+    `INSERT INTO quadra_disponibilidade (quadra_id, dias_semana, hi_text, hf_text)
+     VALUES ($1,$2,$3,$4)
+     ON CONFLICT (quadra_id) DO UPDATE SET dias_semana=$2, hi_text=$3, hf_text=$4
+     RETURNING *`,
+    [quadra_id, dias_semana, hi_text, hf_text]
+  );
+  res.json(result.rows[0]);
+});
+
+// GET /quadras/:id/reservas/admin
 router.get('/:id/reservas/admin', async (req: Request, res: Response) => {
-  const { data } = req.query as Record<string, string>;
-  const where  = data ? 'AND data=$2' : '';
-  const params: unknown[] = data ? [req.params.id, data] : [req.params.id];
   const result = await pool.query(
-    `SELECT * FROM quadra_reservas
-     WHERE quadra_id=$1 ${where} AND status != 'cancelada'
-     ORDER BY data, hora_inicio`,
-    params
+    `SELECT * FROM quadra_reservas WHERE quadra_id=$1 AND status NOT IN ('cancelada')
+     ORDER BY data DESC, hora_inicio`,
+    [Number(req.params.id)]
   );
   res.json(result.rows);
 });
 
-// GET /quadras/:id/reservas/pendentes
-router.get('/:id/reservas/pendentes', async (req: Request, res: Response) => {
-  const result = await pool.query(
-    `SELECT * FROM quadra_reservas WHERE quadra_id=$1 AND status='pendente' ORDER BY created_at`,
-    [req.params.id]
-  );
-  res.json(result.rows);
-});
-
-// POST /quadras/reservas — solicitar ou entrar na fila
+// POST /quadras/reservas
 router.post('/reservas', async (req: Request, res: Response) => {
   const { quadra_id, email_aluno, nome_reserva, whatsapp, data, hora_inicio, hora_fim } = req.body;
   if (!quadra_id || !nome_reserva || !data || !hora_inicio || !hora_fim)
     return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
 
+  const dow = new Date(data + 'T12:00:00').getDay();
+
+  // Valida que hora_inicio está nos slots semanais
+  const slotValido = await pool.query(
+    `SELECT id FROM quadra_slots_semanais WHERE quadra_id=$1 AND dia_semana=$2 AND hora=$3`,
+    [quadra_id, dow, hora_inicio]
+  );
+  if (!slotValido.rows.length)
+    return res.status(400).json({ error: 'Horário não disponível para esta quadra.' });
+
+  // Verifica bloqueio
+  const bloqueio = await pool.query(
+    `SELECT id FROM quadra_bloqueios WHERE quadra_id=$1 AND data=$2 AND hi_text<=$3 AND hf_text>$3`,
+    [quadra_id, data, hora_inicio]
+  );
+  if (bloqueio.rows.length) return res.status(409).json({ error: 'Horário bloqueado.' });
+
+  // Verifica conflito com horário fixo de aula
+  const fixoConflito = await pool.query(
+    `SELECT id FROM agenda_horarios_fixos
+     WHERE nome IS NOT NULL AND ativo=true AND dia_semana=$1
+       AND (valido_de IS NULL OR valido_de::date <= $2::date)
+       AND (valido_ate IS NULL OR valido_ate::date >= $2::date)
+       AND hora_inicio::time <= $3::time AND hora_fim::time > $3::time`,
+    [dow, data, hora_inicio]
+  );
+  if (fixoConflito.rows.length)
+    return res.status(409).json({ error: 'Horário reservado para aula do professor.' });
+
+  // Verifica conflito com reservas existentes
   const conflito = await pool.query(
     `SELECT id FROM quadra_reservas
-     WHERE quadra_id=$1 AND data=$2
-       AND status IN ('pendente','confirmada')
+     WHERE quadra_id=$1 AND data=$2 AND status IN ('confirmada','pendente')
        AND hora_inicio < $4 AND hora_fim > $3`,
     [quadra_id, data, hora_inicio, hora_fim]
   );
-
-  const status = conflito.rows.length > 0 ? 'fila_espera' : 'pendente';
-  const hora   = parseInt(hora_inicio.split(':')[0]);
+  const fila = conflito.rows.length > 0;
 
   const result = await pool.query(
-    `INSERT INTO quadra_reservas
-       (quadra_id, email_aluno, nome_reserva, whatsapp, data, hora, hora_inicio, hora_fim, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-    [quadra_id, email_aluno ?? null, nome_reserva, whatsapp ?? null, data, hora, hora_inicio, hora_fim, status]
+    `INSERT INTO quadra_reservas (quadra_id, email_aluno, nome_reserva, whatsapp, data, hora_inicio, hora_fim, status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [quadra_id, email_aluno || null, nome_reserva, whatsapp || null, data,
+     hora_inicio, hora_fim, fila ? 'fila_espera' : 'pendente']
   );
-
-  res.status(201).json({ ...result.rows[0], fila: status === 'fila_espera' });
+  res.status(201).json({ ...result.rows[0], fila });
 });
 
-// PATCH /quadras/reservas/:id/confirmar — admin confirma
+// PATCH /quadras/reservas/:id/confirmar
 router.patch('/reservas/:id/confirmar', async (req: Request, res: Response) => {
   const result = await pool.query(
     `UPDATE quadra_reservas SET status='confirmada', confirmado_admin=true WHERE id=$1 RETURNING *`,
@@ -239,60 +228,44 @@ router.patch('/reservas/:id/confirmar', async (req: Request, res: Response) => {
   res.json(result.rows[0]);
 });
 
-// PATCH /quadras/reservas/:id/cancelar — admin cancela e promove fila
+// PATCH /quadras/reservas/:id/cancelar
 router.patch('/reservas/:id/cancelar', async (req: Request, res: Response) => {
-  const result = await pool.query(
-    `UPDATE quadra_reservas SET status='cancelada' WHERE id=$1 RETURNING *`,
-    [req.params.id]
+  const r = await pool.query(`SELECT * FROM quadra_reservas WHERE id=$1`, [req.params.id]);
+  if (!r.rows.length) return res.status(404).json({ error: 'Reserva não encontrada.' });
+  const reserva = r.rows[0];
+
+  await pool.query(`UPDATE quadra_reservas SET status='cancelada' WHERE id=$1`, [req.params.id]);
+
+  const proximo = await pool.query(
+    `SELECT * FROM quadra_reservas
+     WHERE quadra_id=$1 AND data=$2 AND hora_inicio=$3 AND status='fila_espera'
+     ORDER BY created_at LIMIT 1`,
+    [reserva.quadra_id, reserva.data, reserva.hora_inicio]
   );
-  if (!result.rows.length) return res.status(404).json({ error: 'Reserva não encontrada.' });
-
-  const r = result.rows[0];
-  if (r.hora_inicio && r.hora_fim) {
-    await pool.query(
-      `UPDATE quadra_reservas SET status='pendente'
-       WHERE id = (
-         SELECT id FROM quadra_reservas
-         WHERE quadra_id=$1 AND data=$2 AND status='fila_espera'
-           AND hora_inicio < $4 AND hora_fim > $3
-         ORDER BY created_at LIMIT 1
-       )`,
-      [r.quadra_id, r.data, r.hora_inicio, r.hora_fim]
-    );
+  if (proximo.rows.length) {
+    await pool.query(`UPDATE quadra_reservas SET status='pendente' WHERE id=$1`, [proximo.rows[0].id]);
   }
-
   res.json({ ok: true });
 });
-
-// =============================================================================
-// BLOQUEIOS
-// =============================================================================
 
 // POST /quadras/bloqueios
 router.post('/bloqueios', async (req: Request, res: Response) => {
   const { quadra_id, data, hi_text, hf_text, motivo } = req.body;
   if (!quadra_id || !data || !hi_text || !hf_text)
     return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
-
-  const hora_inicio = parseInt(hi_text.split(':')[0]);
-  const hora_fim    = parseInt(hf_text.split(':')[0]);
-
   const result = await pool.query(
-    `INSERT INTO quadra_bloqueios (quadra_id, data, hora_inicio, hora_fim, hi_text, hf_text, motivo)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [quadra_id, data, hora_inicio, hora_fim, hi_text, hf_text, motivo ?? null]
+    `INSERT INTO quadra_bloqueios (quadra_id, data, hi_text, hf_text, motivo)
+     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [quadra_id, data, hi_text, hf_text, motivo || null]
   );
   res.status(201).json(result.rows[0]);
 });
 
-// GET /quadras/:id/bloqueios?data=
+// GET /quadras/:id/bloqueios
 router.get('/:id/bloqueios', async (req: Request, res: Response) => {
-  const { data }  = req.query as Record<string, string>;
-  const where     = data ? 'AND data=$2' : '';
-  const params: unknown[] = data ? [req.params.id, data] : [req.params.id];
   const result = await pool.query(
-    `SELECT * FROM quadra_bloqueios WHERE quadra_id=$1 ${where} ORDER BY data, hora_inicio`,
-    params
+    `SELECT * FROM quadra_bloqueios WHERE quadra_id=$1 ORDER BY data DESC, hi_text`,
+    [Number(req.params.id)]
   );
   res.json(result.rows);
 });
@@ -300,34 +273,6 @@ router.get('/:id/bloqueios', async (req: Request, res: Response) => {
 // DELETE /quadras/bloqueios/:id
 router.delete('/bloqueios/:id', async (req: Request, res: Response) => {
   await pool.query(`DELETE FROM quadra_bloqueios WHERE id=$1`, [req.params.id]);
-  res.json({ ok: true });
-});
-
-// =============================================================================
-// QUADRAS CRUD (mantido do original)
-// =============================================================================
-
-router.post('/', async (req: Request, res: Response) => {
-  const { local_id, nome, preco_hora } = req.body;
-  if (!local_id || !nome) return res.status(400).json({ error: 'local_id e nome obrigatórios.' });
-  const result = await pool.query(
-    `INSERT INTO quadras (local_id, nome, preco_hora) VALUES ($1,$2,$3) RETURNING *`,
-    [local_id, nome, preco_hora ?? 0]
-  );
-  res.status(201).json(result.rows[0]);
-});
-
-router.put('/:id', async (req: Request, res: Response) => {
-  const { nome, preco_hora } = req.body;
-  const result = await pool.query(
-    `UPDATE quadras SET nome=$1, preco_hora=$2 WHERE id=$3 RETURNING *`,
-    [nome, preco_hora ?? 0, req.params.id]
-  );
-  res.json(result.rows[0]);
-});
-
-router.delete('/:id', async (req: Request, res: Response) => {
-  await pool.query(`UPDATE quadras SET ativa=false WHERE id=$1`, [req.params.id]);
   res.json({ ok: true });
 });
 
