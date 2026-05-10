@@ -4,13 +4,11 @@ import { Pool } from 'pg';
 const router = Router();
 const pool   = new Pool({ connectionString: process.env.DATABASE_URL });
 
-// ─── Helper: monta slots do dia (fixos + overrides + manuais) ────────────────
 async function buildSlotsDodia(admin_email: string, data: string, isAdmin: boolean) {
   const dow    = new Date(data + 'T12:00:00').getDay();
   const agora  = new Date();
   const isHoje = data === agora.toISOString().split('T')[0];
 
-  // 1. Horários fixos ativos para o dia da semana
   const fixos = await pool.query(
     `SELECT * FROM agenda_horarios_fixos
      WHERE admin_email=$1 AND dia_semana=$2 AND ativo=true
@@ -18,7 +16,6 @@ async function buildSlotsDodia(admin_email: string, data: string, isAdmin: boole
     [admin_email, dow]
   );
 
-  // 2. Overrides para a data específica
   const overrides = await pool.query(
     `SELECT * FROM agenda_slot_override WHERE admin_email=$1 AND data=$2`,
     [admin_email, data]
@@ -26,7 +23,6 @@ async function buildSlotsDodia(admin_email: string, data: string, isAdmin: boole
   const overrideMap: Record<string, any> = {};
   overrides.rows.forEach(o => { overrideMap[String(o.hora_inicio)] = o; });
 
-  // 3. Slots manuais para a data
   const manuais = await pool.query(
     `SELECT * FROM agenda_slots
      WHERE admin_email=$1 AND data=$2 AND status != 'cancelado'
@@ -34,7 +30,6 @@ async function buildSlotsDodia(admin_email: string, data: string, isAdmin: boole
     [admin_email, data]
   );
 
-  // 4. Inscrições para a data
   const inscricoes = await pool.query(
     `SELECT i.*, u.foto_url
      FROM agenda_inscricoes i
@@ -53,17 +48,29 @@ async function buildSlotsDodia(admin_email: string, data: string, isAdmin: boole
   const slots: any[] = [];
   const horasUsadas  = new Set<string>();
 
-  // Processar slots fixos
   for (const fixo of fixos.rows) {
     const hi       = String(fixo.hora_inicio);
     const override = overrideMap[hi];
 
     if (override?.status === 'cancelado') continue;
 
-    const tipo         = override?.tipo  ?? 'individual';
-    const vagas        = override?.vagas ?? 1;
-    const inscs        = inscMap[hi] ?? [];
-    const confirmadas  = inscs.filter(i => i.status === 'confirmada').length;
+    const tipo  = override?.tipo  ?? 'individual';
+    const vagas = override?.vagas ?? 1;
+
+    // ── Nome fixado: verifica se a data está no período de validade ──────────
+    const nomeDe  = fixo.valido_de  ? String(fixo.valido_de).slice(0, 10)  : null;
+    const nomeAte = fixo.valido_ate ? String(fixo.valido_ate).slice(0, 10) : null;
+    const nomeValido = fixo.nome && (
+      (!nomeDe  || data >= nomeDe) &&
+      (!nomeAte || data <= nomeAte)
+    );
+    const nomeFixo = nomeValido ? fixo.nome : null;
+
+    const inscs       = inscMap[hi] ?? [];
+    const confirmadas = inscs.filter(i => i.status === 'confirmada').length;
+
+    // Se tem nome fixado, trata como vaga ocupada
+    const vagasConfirmadas = nomeFixo ? vagas : confirmadas;
 
     let perto1h = false;
     if (isHoje) {
@@ -74,15 +81,16 @@ async function buildSlotsDodia(admin_email: string, data: string, isAdmin: boole
     }
 
     const slot: any = {
-      source:           'fixo',
-      fixo_id:          fixo.id,
-      override_id:      override?.id ?? null,
-      hora_inicio:      hi,
-      hora_fim:         String(fixo.hora_fim),
+      source:            'fixo',
+      fixo_id:           fixo.id,
+      override_id:       override?.id ?? null,
+      hora_inicio:       hi,
+      hora_fim:          String(fixo.hora_fim),
       tipo,
       vagas,
-      vagas_confirmadas: confirmadas,
+      vagas_confirmadas: vagasConfirmadas,
       perto1h,
+      nome_fixo:         nomeFixo,
     };
 
     if (isAdmin) slot.inscricoes = inscs;
@@ -91,7 +99,6 @@ async function buildSlotsDodia(admin_email: string, data: string, isAdmin: boole
     horasUsadas.add(hi);
   }
 
-  // Processar slots manuais que não conflitem com fixos
   for (const manual of manuais.rows) {
     const hi = String(manual.hora_inicio);
     if (horasUsadas.has(hi)) continue;
@@ -117,6 +124,7 @@ async function buildSlotsDodia(admin_email: string, data: string, isAdmin: boole
       status_manual:     manual.status,
       observacao:        manual.observacao ?? null,
       perto1h,
+      nome_fixo:         null,
     };
 
     if (isAdmin) slot.inscricoes = inscs;
@@ -129,10 +137,7 @@ async function buildSlotsDodia(admin_email: string, data: string, isAdmin: boole
 }
 
 // ===========================================================================
-// ROTAS EXISTENTES (mantidas)
-// ===========================================================================
 
-// GET /agenda/admin-info
 router.get('/admin-info', async (req: Request, res: Response) => {
   const result = await pool.query(
     `SELECT email, telefone FROM users WHERE role = 'admin' LIMIT 1`
@@ -141,7 +146,6 @@ router.get('/admin-info', async (req: Request, res: Response) => {
   res.json(result.rows[0]);
 });
 
-// GET /agenda/slots — visão aluno (legado)
 router.get('/slots', async (req: Request, res: Response) => {
   const { admin_email, data } = req.query as Record<string, string>;
   if (!admin_email) return res.status(400).json({ error: 'admin_email obrigatório.' });
@@ -155,7 +159,6 @@ router.get('/slots', async (req: Request, res: Response) => {
   res.json(result.rows);
 });
 
-// GET /agenda/slots/admin — visão admin (legado)
 router.get('/slots/admin', async (req: Request, res: Response) => {
   const { admin_email, data } = req.query as Record<string, string>;
   if (!admin_email) return res.status(400).json({ error: 'admin_email obrigatório.' });
@@ -169,7 +172,6 @@ router.get('/slots/admin', async (req: Request, res: Response) => {
   res.json(result.rows);
 });
 
-// POST /agenda/slots — admin cria slot manual
 router.post('/slots', async (req: Request, res: Response) => {
   const { admin_email, data, hora_inicio, hora_fim, tipo, vagas, observacao } = req.body;
   if (!admin_email || !data || !hora_inicio || !hora_fim || !tipo)
@@ -189,7 +191,6 @@ router.post('/slots', async (req: Request, res: Response) => {
   res.status(201).json(result.rows[0]);
 });
 
-// PATCH /agenda/slots/:id/ocupado
 router.patch('/slots/:id/ocupado', async (req: Request, res: Response) => {
   const { admin_email, ocupado } = req.body;
   const novoStatus = ocupado ? 'ocupado' : 'ativo';
@@ -201,7 +202,6 @@ router.patch('/slots/:id/ocupado', async (req: Request, res: Response) => {
   res.json(result.rows[0]);
 });
 
-// DELETE /agenda/slots/:id
 router.delete('/slots/:id', async (req: Request, res: Response) => {
   const { admin_email } = req.body;
   await pool.query(
@@ -211,11 +211,6 @@ router.delete('/slots/:id', async (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
-// ===========================================================================
-// NOVAS ROTAS
-// ===========================================================================
-
-// GET /agenda/dia?admin_email=&data=&role= — todos os slots do dia
 router.get('/dia', async (req: Request, res: Response) => {
   const { admin_email, data, role } = req.query as Record<string, string>;
   if (!admin_email || !data)
@@ -229,7 +224,6 @@ router.get('/dia', async (req: Request, res: Response) => {
   }
 });
 
-// GET /agenda/horarios-fixos?admin_email= — lista template
 router.get('/horarios-fixos', async (req: Request, res: Response) => {
   const { admin_email } = req.query as Record<string, string>;
   if (!admin_email) return res.status(400).json({ error: 'admin_email obrigatório.' });
@@ -241,7 +235,6 @@ router.get('/horarios-fixos', async (req: Request, res: Response) => {
   res.json(result.rows);
 });
 
-// POST /agenda/horarios-fixos — admin cria horário fixo
 router.post('/horarios-fixos', async (req: Request, res: Response) => {
   const { admin_email, dia_semana, hora_inicio, hora_fim } = req.body;
   if (!admin_email || dia_semana === undefined || !hora_inicio || !hora_fim)
@@ -259,7 +252,28 @@ router.post('/horarios-fixos', async (req: Request, res: Response) => {
   }
 });
 
-// DELETE /agenda/horarios-fixos/:id — admin desativa horário fixo
+// ── NOVO: PATCH /agenda/horarios-fixos/:id — salva nome/período ──────────────
+router.patch('/horarios-fixos/:id', async (req: Request, res: Response) => {
+  const { admin_email, nome, email_vinculado, valido_de, valido_ate } = req.body;
+  if (!admin_email) return res.status(400).json({ error: 'admin_email obrigatório.' });
+
+  const result = await pool.query(
+    `UPDATE agenda_horarios_fixos
+     SET nome=$1, email_vinculado=$2, valido_de=$3, valido_ate=$4
+     WHERE id=$5 AND admin_email=$6 RETURNING *`,
+    [
+      nome        || null,
+      email_vinculado || null,
+      valido_de   || null,
+      valido_ate  || null,
+      req.params.id,
+      admin_email,
+    ]
+  );
+  if (!result.rows.length) return res.status(404).json({ error: 'Horário fixo não encontrado.' });
+  res.json(result.rows[0]);
+});
+
 router.delete('/horarios-fixos/:id', async (req: Request, res: Response) => {
   const { admin_email } = req.body;
   await pool.query(
@@ -269,7 +283,6 @@ router.delete('/horarios-fixos/:id', async (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
-// POST /agenda/slot-override — admin configura slot específico de uma data (upsert)
 router.post('/slot-override', async (req: Request, res: Response) => {
   const { admin_email, data, hora_inicio, hora_fim, tipo, vagas, status } = req.body;
   if (!admin_email || !data || !hora_inicio || !hora_fim)
@@ -285,7 +298,6 @@ router.post('/slot-override', async (req: Request, res: Response) => {
   res.json(result.rows[0]);
 });
 
-// GET /agenda/solicitacoes?admin_email=&incluir_historico=1 — admin vê solicitações/confirmadas
 router.get('/solicitacoes', async (req: Request, res: Response) => {
   const { admin_email, incluir_historico } = req.query as Record<string, string>;
   if (!admin_email) return res.status(400).json({ error: 'admin_email obrigatório.' });
@@ -319,13 +331,11 @@ router.get('/solicitacoes', async (req: Request, res: Response) => {
   res.json(result.rows);
 });
 
-// POST /agenda/reservas — usuário solicita reserva
 router.post('/reservas', async (req: Request, res: Response) => {
   const { admin_email, data, hora_inicio, hora_fim, email_aluno, nome_aluno, telefone_usuario } = req.body;
   if (!admin_email || !data || !hora_inicio || !hora_fim || !email_aluno || !nome_aluno)
     return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
 
-  // Verifica se já tem solicitação ativa do mesmo usuário nesse slot
   const jaReservou = await pool.query(
     `SELECT id FROM agenda_inscricoes
      WHERE admin_email=$1 AND data=$2 AND hora_inicio=$3 AND email_aluno=$4
@@ -335,7 +345,6 @@ router.post('/reservas', async (req: Request, res: Response) => {
   if (jaReservou.rows.length > 0)
     return res.status(409).json({ error: 'Você já tem uma solicitação neste horário.' });
 
-  // Busca configuração do slot
   const override = await pool.query(
     `SELECT * FROM agenda_slot_override
      WHERE admin_email=$1 AND data=$2 AND hora_inicio=$3`,
@@ -344,7 +353,6 @@ router.post('/reservas', async (req: Request, res: Response) => {
   const tipo  = override.rows[0]?.tipo  ?? 'individual';
   const vagas = override.rows[0]?.vagas ?? 1;
 
-  // Conta confirmadas
   const confResult = await pool.query(
     `SELECT COUNT(*) FROM agenda_inscricoes
      WHERE admin_email=$1 AND data=$2 AND hora_inicio=$3 AND status='confirmada'`,
@@ -352,10 +360,23 @@ router.post('/reservas', async (req: Request, res: Response) => {
   );
   const qtdConfirmadas = Number(confResult.rows[0].count);
 
-  // Define status inicial
+  // Também verifica se tem nome fixado (conta como ocupado)
+  const fixoResult = await pool.query(
+    `SELECT nome, valido_de, valido_ate FROM agenda_horarios_fixos
+     WHERE admin_email=$1 AND dia_semana=$2 AND hora_inicio=$3 AND ativo=true AND nome IS NOT NULL`,
+    [admin_email, new Date(data + 'T12:00:00').getDay(), hora_inicio]
+  );
+  const fixoNome = fixoResult.rows[0];
+  const nomeValido = fixoNome && (
+    (!fixoNome.valido_de  || data >= String(fixoNome.valido_de).slice(0, 10)) &&
+    (!fixoNome.valido_ate || data <= String(fixoNome.valido_ate).slice(0, 10))
+  );
+  const ocupadoPorNome = nomeValido && tipo === 'individual';
+
   let status = 'pendente';
-  if (tipo === 'individual' && qtdConfirmadas >= 1) status = 'lista_espera';
-  if (tipo === 'coletivo'   && qtdConfirmadas >= vagas) status = 'lista_espera';
+  if (ocupadoPorNome) status = 'lista_espera';
+  else if (tipo === 'individual' && qtdConfirmadas >= 1) status = 'lista_espera';
+  else if (tipo === 'coletivo'   && qtdConfirmadas >= vagas) status = 'lista_espera';
 
   const result = await pool.query(
     `INSERT INTO agenda_inscricoes
@@ -366,7 +387,6 @@ router.post('/reservas', async (req: Request, res: Response) => {
   res.status(201).json(result.rows[0]);
 });
 
-// PATCH /agenda/reservas/:id/confirmar — admin confirma inscrição
 router.patch('/reservas/:id/confirmar', async (req: Request, res: Response) => {
   const { admin_email } = req.body;
   const { id }          = req.params;
@@ -379,7 +399,6 @@ router.patch('/reservas/:id/confirmar', async (req: Request, res: Response) => {
     return res.status(404).json({ error: 'Inscrição não encontrada.' });
   const insc = inscResult.rows[0];
 
-  // Configuração do slot
   const override = await pool.query(
     `SELECT * FROM agenda_slot_override
      WHERE admin_email=$1 AND data=$2 AND hora_inicio=$3`,
@@ -388,7 +407,6 @@ router.patch('/reservas/:id/confirmar', async (req: Request, res: Response) => {
   const tipo  = override.rows[0]?.tipo  ?? 'individual';
   const vagas = override.rows[0]?.vagas ?? 1;
 
-  // Conta confirmadas (excluindo a atual)
   const confResult = await pool.query(
     `SELECT COUNT(*) FROM agenda_inscricoes
      WHERE admin_email=$1 AND data=$2 AND hora_inicio=$3 AND status='confirmada' AND id!=$4`,
@@ -401,13 +419,11 @@ router.patch('/reservas/:id/confirmar', async (req: Request, res: Response) => {
   if (tipo === 'coletivo' && qtdConfirmadas >= vagas)
     return res.status(409).json({ error: 'Todas as vagas já estão preenchidas.' });
 
-  // Confirma
   await pool.query(
     `UPDATE agenda_inscricoes SET status='confirmada', confirmado_admin=true WHERE id=$1`,
     [id]
   );
 
-  // Se vagas cheias agora: manda pendentes para lista_espera
   const novoTotal = qtdConfirmadas + 1;
   if (tipo === 'individual' || (tipo === 'coletivo' && novoTotal >= vagas)) {
     await pool.query(
@@ -420,7 +436,6 @@ router.patch('/reservas/:id/confirmar', async (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
-// PATCH /agenda/reservas/:id/cancelar — admin cancela confirmação ou inscrição
 router.patch('/reservas/:id/cancelar', async (req: Request, res: Response) => {
   const { admin_email } = req.body;
   const { id }          = req.params;
@@ -433,13 +448,11 @@ router.patch('/reservas/:id/cancelar', async (req: Request, res: Response) => {
     return res.status(404).json({ error: 'Inscrição não encontrada.' });
   const insc = inscResult.rows[0];
 
-  // Cancela
   await pool.query(
     `UPDATE agenda_inscricoes SET status='cancelada', confirmado_admin=false WHERE id=$1`,
     [id]
   );
 
-  // Busca próximo da lista de espera
   const proximo = await pool.query(
     `SELECT * FROM agenda_inscricoes
      WHERE admin_email=$1 AND data=$2 AND hora_inicio=$3 AND status='lista_espera'
@@ -450,7 +463,6 @@ router.patch('/reservas/:id/cancelar', async (req: Request, res: Response) => {
   res.json({ ok: true, proximo_espera: proximo.rows[0] ?? null });
 });
 
-// GET /agenda/minhas-inscricoes?email_aluno=&admin_email=
 router.get('/minhas-inscricoes', async (req: Request, res: Response) => {
   const { email_aluno, admin_email } = req.query as Record<string, string>;
   if (!email_aluno || !admin_email)
@@ -471,64 +483,38 @@ router.get('/minhas-inscricoes', async (req: Request, res: Response) => {
   res.json(result.rows);
 });
 
-// GET /agenda/proxima?email=&role= — próxima aula confirmada do usuário/admin
 router.get('/proxima', async (req: Request, res: Response) => {
   const email = (req.query.email as string | undefined)?.trim();
-  const role  = (req.query.role as string | undefined)?.trim();
-
-  if (!email) {
-    return res.status(400).json({ error: 'email obrigatório.' });
-  }
+  const role  = (req.query.role  as string | undefined)?.trim();
+  if (!email) return res.status(400).json({ error: 'email obrigatório.' });
 
   const isAdmin = role === 'admin';
-
   try {
     const result = await pool.query(
-      `SELECT
-          i.id,
-          i.admin_email,
-          i.data::text AS data,
-          i.hora_inicio::text AS hora_inicio,
-          i.hora_fim::text AS hora_fim,
-          i.email_aluno,
-          i.nome_aluno,
-          i.telefone_usuario,
-          i.status,
-          i.created_at,
-          u_aluno.foto_url AS foto_aluno
+      `SELECT i.id, i.admin_email, i.data::text AS data,
+              i.hora_inicio::text AS hora_inicio, i.hora_fim::text AS hora_fim,
+              i.email_aluno, i.nome_aluno, i.telefone_usuario, i.status, i.created_at,
+              u_aluno.foto_url AS foto_aluno
        FROM agenda_inscricoes i
-       LEFT JOIN users u_aluno
-         ON LOWER(u_aluno.email) = LOWER(i.email_aluno)
+       LEFT JOIN users u_aluno ON LOWER(u_aluno.email) = LOWER(i.email_aluno)
        WHERE ${isAdmin ? 'LOWER(i.admin_email) = LOWER($1)' : 'LOWER(i.email_aluno) = LOWER($1)'}
          AND i.status = 'confirmada'
-         AND (
-           i.data > CURRENT_DATE
-           OR (i.data = CURRENT_DATE AND i.hora_fim > NOW()::TIME)
-         )
-       ORDER BY i.data ASC, i.hora_inicio ASC
-       LIMIT 1`,
+         AND (i.data > CURRENT_DATE OR (i.data = CURRENT_DATE AND i.hora_fim > NOW()::TIME))
+       ORDER BY i.data ASC, i.hora_inicio ASC LIMIT 1`,
       [email]
     );
-
-    if (!result.rows.length) {
-      return res.json(null);
-    }
-
+    if (!result.rows.length) return res.json(null);
     const aula = result.rows[0];
-
     res.json({
-      tipo: 'aula',
-      id: aula.id,
-      dataInicio: aula.data,
-      dataFim: null,
+      tipo: 'aula', id: aula.id,
+      dataInicio: aula.data, dataFim: null,
       horarioInicio: String(aula.hora_inicio).slice(0, 5),
-      horarioFim: String(aula.hora_fim).slice(0, 5),
-      local: 'Agenda do Prof. Carlão',
-      status: 'confirmada',
-      alunoNome: aula.nome_aluno,
-      alunoEmail: aula.email_aluno,
-      adversarioNome: isAdmin ? aula.nome_aluno : 'Prof. Carlão',
-      adversarioEmail: isAdmin ? aula.email_aluno : aula.admin_email,
+      horarioFim:    String(aula.hora_fim).slice(0, 5),
+      local: 'Agenda do Prof. Carlão', status: 'confirmada',
+      alunoNome:      aula.nome_aluno,
+      alunoEmail:     aula.email_aluno,
+      adversarioNome: isAdmin ? aula.nome_aluno  : 'Prof. Carlão',
+      adversarioEmail:isAdmin ? aula.email_aluno : aula.admin_email,
     });
   } catch (e) {
     console.error('[GET /agenda/proxima]', e);
@@ -536,17 +522,12 @@ router.get('/proxima', async (req: Request, res: Response) => {
   }
 });
 
-// GET /agenda/atividades?email=&role= — lista aulas confirmadas futuras e anteriores para a Home
 router.get('/atividades', async (req: Request, res: Response) => {
   const email = (req.query.email as string | undefined)?.trim();
-  const role  = (req.query.role as string | undefined)?.trim();
-
-  if (!email) {
-    return res.status(400).json({ error: 'email obrigatório.' });
-  }
+  const role  = (req.query.role  as string | undefined)?.trim();
+  if (!email) return res.status(400).json({ error: 'email obrigatório.' });
 
   const isAdmin = role === 'admin';
-
   try {
     const result = await pool.query(
       `SELECT
@@ -558,51 +539,38 @@ router.get('/atividades', async (req: Request, res: Response) => {
           i.hora_inicio::text AS "horarioInicio",
           i.hora_fim::text AS "horarioFim",
           'Agenda do Prof. Carlão' AS local,
-          CASE
-            WHEN $2::boolean THEN ('Aula com ' || COALESCE(i.nome_aluno, split_part(i.email_aluno, '@', 1), 'aluno'))
+          CASE WHEN $2::boolean
+            THEN ('Aula com ' || COALESCE(i.nome_aluno, split_part(i.email_aluno,'@',1),'aluno'))
             ELSE 'Aula com Prof. Carlão'
           END AS titulo,
-          CASE
-            WHEN $2::boolean THEN i.email_aluno
-            ELSE i.admin_email
-          END AS "pessoaEmail",
-          CASE
-            WHEN $2::boolean THEN COALESCE(i.nome_aluno, split_part(i.email_aluno, '@', 1), 'aluno')
+          CASE WHEN $2::boolean THEN i.email_aluno   ELSE i.admin_email  END AS "pessoaEmail",
+          CASE WHEN $2::boolean
+            THEN COALESCE(i.nome_aluno, split_part(i.email_aluno,'@',1),'aluno')
             ELSE 'Prof. Carlão'
           END AS "pessoaNome",
           i.status,
-          CASE
-            WHEN i.data < CURRENT_DATE
-              OR (i.data = CURRENT_DATE AND i.hora_fim <= NOW()::TIME)
-            THEN true
-            ELSE false
-          END AS passado
+          CASE WHEN i.data < CURRENT_DATE
+            OR (i.data = CURRENT_DATE AND i.hora_fim <= NOW()::TIME)
+            THEN true ELSE false END AS passado
        FROM agenda_inscricoes i
        WHERE ${isAdmin ? 'LOWER(i.admin_email) = LOWER($1)' : 'LOWER(i.email_aluno) = LOWER($1)'}
          AND i.status = 'confirmada'
        ORDER BY
-         CASE
-           WHEN i.data < CURRENT_DATE
-             OR (i.data = CURRENT_DATE AND i.hora_fim <= NOW()::TIME)
-           THEN 1
-           ELSE 0
-         END,
-         i.data ASC,
-         i.hora_inicio ASC
+         CASE WHEN i.data < CURRENT_DATE
+           OR (i.data = CURRENT_DATE AND i.hora_fim <= NOW()::TIME) THEN 1 ELSE 0 END,
+         i.data ASC, i.hora_inicio ASC
        LIMIT 80`,
       [email, isAdmin]
     );
-
     res.json(result.rows.map(row => ({
       ...row,
       horarioInicio: String(row.horarioInicio).slice(0, 5),
-      horarioFim: String(row.horarioFim).slice(0, 5),
+      horarioFim:    String(row.horarioFim).slice(0, 5),
     })));
   } catch (e) {
     console.error('[GET /agenda/atividades]', e);
     res.status(500).json({ error: 'Erro ao carregar atividades da agenda.' });
   }
 });
-
 
 export { router as agendaRouter };
