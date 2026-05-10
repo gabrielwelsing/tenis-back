@@ -572,5 +572,135 @@ router.get('/atividades', async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Erro ao carregar atividades da agenda.' });
   }
 });
+// ── Helper: gera datas futuras de uma recorrência semanal ────────────────────
+function proximasOcorrencias(dia_semana: number, valido_de: string | null, valido_ate: string | null): string[] {
+  const hoje = new Date().toISOString().split('T')[0];
+  const de   = (valido_de && valido_de > hoje) ? valido_de : hoje;
+  const ate  = valido_ate || (() => {
+    const d = new Date(); d.setDate(d.getDate() + 56);
+    return d.toISOString().split('T')[0];
+  })();
+  const datas: string[] = [];
+  let cur = new Date(de + 'T12:00:00');
+  const fim = new Date(ate + 'T12:00:00');
+  while (cur.getDay() !== dia_semana) cur.setDate(cur.getDate() + 1);
+  while (cur <= fim) {
+    datas.push(cur.toISOString().split('T')[0]);
+    cur.setDate(cur.getDate() + 7);
+  }
+  return datas;
+}
+
+// GET /agenda/confirmadas-fixos?admin_email= — ocorrências futuras de slots fixos com nome
+router.get('/confirmadas-fixos', async (req: Request, res: Response) => {
+  const { admin_email } = req.query as Record<string, string>;
+  if (!admin_email) return res.status(400).json({ error: 'admin_email obrigatório.' });
+
+  const hoje = new Date().toISOString().split('T')[0];
+  const fixos = await pool.query(
+    `SELECT * FROM agenda_horarios_fixos
+     WHERE admin_email=$1 AND nome IS NOT NULL AND ativo=true
+       AND (valido_ate IS NULL OR valido_ate::date >= $2)`,
+    [admin_email, hoje]
+  );
+
+  const ocorrencias: any[] = [];
+
+  for (const fixo of fixos.rows) {
+    const datas = proximasOcorrencias(
+      fixo.dia_semana,
+      fixo.valido_de ? String(fixo.valido_de).slice(0,10) : null,
+      fixo.valido_ate ? String(fixo.valido_ate).slice(0,10) : null,
+    );
+
+    for (const data of datas) {
+      // Checa se esta data foi cancelada via slot_override
+      const ov = await pool.query(
+        `SELECT status FROM agenda_slot_override
+         WHERE admin_email=$1 AND data=$2 AND hora_inicio=$3`,
+        [admin_email, data, fixo.hora_inicio]
+      );
+      if (ov.rows[0]?.status === 'cancelado') continue;
+
+      const espera = await pool.query(
+        `SELECT COUNT(*) FROM agenda_inscricoes
+         WHERE admin_email=$1 AND data=$2 AND hora_inicio=$3 AND status='lista_espera'`,
+        [admin_email, data, fixo.hora_inicio]
+      );
+
+      ocorrencias.push({
+        fixo_id:          fixo.id,
+        data,
+        hora_inicio:      String(fixo.hora_inicio).slice(0, 5),
+        hora_fim:         String(fixo.hora_fim).slice(0, 5),
+        nome:             fixo.nome,
+        dia_semana:       fixo.dia_semana,
+        fila_espera_count: Number(espera.rows[0].count),
+      });
+    }
+  }
+
+  ocorrencias.sort((a, b) => a.data !== b.data
+    ? a.data.localeCompare(b.data)
+    : a.hora_inicio.localeCompare(b.hora_inicio)
+  );
+  res.json(ocorrencias);
+});
+
+// POST /agenda/horarios-fixos/:id/cancelar-ocorrencia
+router.post('/horarios-fixos/:id/cancelar-ocorrencia', async (req: Request, res: Response) => {
+  const { admin_email, data, tipo } = req.body;
+  // tipo: 'esta' | 'futuras'
+  if (!admin_email || !data || !tipo)
+    return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
+
+  const fixoResult = await pool.query(
+    `SELECT * FROM agenda_horarios_fixos WHERE id=$1 AND admin_email=$2`,
+    [req.params.id, admin_email]
+  );
+  if (!fixoResult.rows.length) return res.status(404).json({ error: 'Não encontrado.' });
+  const fixo = fixoResult.rows[0];
+
+  if (tipo === 'esta') {
+    // Cancela só esta data via slot_override
+    await pool.query(
+      `INSERT INTO agenda_slot_override (admin_email, data, hora_inicio, hora_fim, tipo, vagas, status)
+       VALUES ($1,$2,$3,$4,'individual',1,'cancelado')
+       ON CONFLICT (admin_email, data, hora_inicio) DO UPDATE SET status='cancelado'`,
+      [admin_email, data, fixo.hora_inicio, fixo.hora_fim]
+    );
+  } else {
+    // Cancela este e todos os futuros: encurta valido_ate para data - 1 dia
+    const d = new Date(data + 'T12:00:00');
+    d.setDate(d.getDate() - 1);
+    const novoAte = d.toISOString().split('T')[0];
+    await pool.query(
+      `UPDATE agenda_horarios_fixos SET valido_ate=$1 WHERE id=$2`,
+      [novoAte, fixo.id]
+    );
+    // Se novo valido_ate ficou antes do valido_de, limpa o nome inteiramente
+    const de = fixo.valido_de ? String(fixo.valido_de).slice(0,10) : null;
+    if (de && novoAte < de) {
+      await pool.query(
+        `UPDATE agenda_horarios_fixos
+         SET nome=NULL, email_vinculado=NULL, valido_de=NULL, valido_ate=NULL WHERE id=$1`,
+        [fixo.id]
+      );
+    }
+  }
+
+  // Promove primeiro da fila de espera desta data
+  const proximo = await pool.query(
+    `SELECT * FROM agenda_inscricoes
+     WHERE admin_email=$1 AND data=$2 AND hora_inicio=$3 AND status='lista_espera'
+     ORDER BY created_at LIMIT 1`,
+    [admin_email, data, fixo.hora_inicio]
+  );
+  if (proximo.rows.length) {
+    await pool.query(`UPDATE agenda_inscricoes SET status='pendente' WHERE id=$1`, [proximo.rows[0].id]);
+  }
+
+  res.json({ ok: true, promovido: proximo.rows[0] ?? null });
+});
 
 export { router as agendaRouter };
