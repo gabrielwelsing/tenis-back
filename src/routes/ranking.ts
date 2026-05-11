@@ -842,7 +842,7 @@ router.patch('/desafios/:id', async (req: Request, res: Response) => {
   if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
   const { status, contra_data, contra_horario, contra_local } = req.body;
-  const valid = ['aceito', 'recusado', 'contraproposto'];
+  const valid = ['aceito', 'recusado', 'contraproposto', 'cancelado'];
   if (!valid.includes(status))
     return res.status(400).json({ error: `status deve ser: ${valid.join(', ')}.` });
 
