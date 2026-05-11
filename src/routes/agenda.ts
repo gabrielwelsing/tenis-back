@@ -250,6 +250,10 @@ router.post('/horarios-fixos', async (req: Request, res: Response) => {
     );
  
     res.status(201).json(result.rows[0]);
+  } catch (e) {
+    console.error('[POST /horarios-fixos]', e);
+    res.status(500).json({ error: 'Erro ao salvar horário fixo.' });
+  } 
 });
 
 // ── NOVO: PATCH /agenda/horarios-fixos/:id — salva nome/período ──────────────
