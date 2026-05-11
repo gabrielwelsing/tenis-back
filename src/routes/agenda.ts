@@ -60,17 +60,17 @@ async function buildSlotsDodia(admin_email: string, data: string, isAdmin: boole
     // ── Nome fixado: verifica se a data está no período de validade ──────────
     const nomeDe  = fixo.valido_de  ? String(fixo.valido_de).slice(0, 10)  : null;
     const nomeAte = fixo.valido_ate ? String(fixo.valido_ate).slice(0, 10) : null;
-    const nomeValido = fixo.nome && (
+    const nomeValido = (fixo.nome || fixo.email_vinculado) && (
       (!nomeDe  || data >= nomeDe) &&
       (!nomeAte || data <= nomeAte)
     );
-    const nomeFixo = nomeValido ? fixo.nome : null;
+    const nomeFixo = nomeValido ? (fixo.nome || fixo.email_vinculado) : null;
 
     const inscs       = inscMap[hi] ?? [];
     const confirmadas = inscs.filter(i => i.status === 'confirmada').length;
 
     // Se tem nome fixado, trata como vaga ocupada
-    const vagasConfirmadas = (nomeFixo || !isAdmin) ? vagas : confirmadas;
+    const vagasConfirmadas = nomeFixo ? vagas : confirmadas;
 
     let perto1h = false;
     if (isHoje) {
@@ -242,14 +242,14 @@ router.post('/horarios-fixos', async (req: Request, res: Response) => {
   try {
     const result = await pool.query(
       `INSERT INTO agenda_horarios_fixos (admin_email, dia_semana, hora_inicio, hora_fim)
-       VALUES ($1,$2,$3,$4) RETURNING *`,
+      VALUES ($1,$2,$3,$4)
+      ON CONFLICT (admin_email, dia_semana, hora_inicio)
+      DO UPDATE SET ativo=true, hora_fim=$4
+      RETURNING *`,
       [admin_email, dia_semana, hora_inicio, hora_fim]
     );
+ 
     res.status(201).json(result.rows[0]);
-  } catch (e: any) {
-    if (e.code === '23505') return res.status(409).json({ error: 'Horário fixo já existe.' });
-    throw e;
-  }
 });
 
 // ── NOVO: PATCH /agenda/horarios-fixos/:id — salva nome/período ──────────────
