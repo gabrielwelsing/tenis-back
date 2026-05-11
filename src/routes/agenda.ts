@@ -70,7 +70,7 @@ async function buildSlotsDodia(admin_email: string, data: string, isAdmin: boole
     const confirmadas = inscs.filter(i => i.status === 'confirmada').length;
 
     // Se tem nome fixado, trata como vaga ocupada
-    const vagasConfirmadas = nomeFixo ? vagas : confirmadas;
+    const vagasConfirmadas = (nomeFixo || !isAdmin) ? vagas : confirmadas;
 
     let perto1h = false;
     if (isHoje) {
