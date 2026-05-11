@@ -22,7 +22,16 @@ app.use((_req, res, next) => {
   next();
 });
 
-app.use(cors());
+const corsOptions = {
+  origin: true,
+  credentials: true,
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization'],
+};
+
+app.options('*', cors(corsOptions));
+app.use(cors(corsOptions));
+
 app.use(express.json());
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
