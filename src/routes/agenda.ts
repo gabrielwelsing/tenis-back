@@ -58,8 +58,8 @@ async function buildSlotsDodia(admin_email: string, data: string, isAdmin: boole
     const vagas = override?.vagas ?? 1;
 
     // ── Nome fixado: verifica se a data está no período de validade ──────────
-    const nomeDe  = fixo.valido_de  ? String(fixo.valido_de).slice(0, 10)  : null;
-    const nomeAte = fixo.valido_ate ? String(fixo.valido_ate).slice(0, 10) : null;
+    const nomeDe  = fixo.valido_de  ? new Date(fixo.valido_de).toISOString().slice(0, 10)  : null;
+    const nomeAte = fixo.valido_ate ? new Date(fixo.valido_ate).toISOString().slice(0, 10) : null;
     const nomeValido = (fixo.nome || fixo.email_vinculado) && (
       (!nomeDe  || data >= nomeDe) &&
       (!nomeAte || data <= nomeAte)
