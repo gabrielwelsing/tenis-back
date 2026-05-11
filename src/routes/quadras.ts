@@ -101,9 +101,9 @@ router.post('/disponibilidade', async (req: Request, res: Response) => {
 
   await pool.query(`DELETE FROM quadra_disponibilidade WHERE quadra_id=$1`, [quadra_id]);
   const result = await pool.query(
-    `INSERT INTO quadra_disponibilidade (quadra_id, dias_semana, hora_inicio, hora_fim, hi_text, hf_text)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [quadra_id, dias_semana, hora_inicio, hora_fim, hi_text, hf_text]
+    `INSERT INTO quadra_disponibilidade (quadra_id, dias_semana, hora_inicio, hora_fim)
+     VALUES ($1,$2,$3,$4) RETURNING *`,
+    [quadra_id, dias_semana, hora_inicio, hora_fim]
   );
   res.status(201).json(result.rows[0]);
 });
@@ -120,59 +120,64 @@ router.delete('/disponibilidade/:id', async (req: Request, res: Response) => {
 
 // GET /quadras/:id/slots?data=YYYY-MM-DD
 router.get('/:id/slots', async (req: Request, res: Response) => {
-  const { data } = req.query as Record<string, string>;
-  if (!data) return res.status(400).json({ error: 'data obrigatória.' });
+  try {
+    const { data } = req.query as Record<string, string>;
+    if (!data) return res.status(400).json({ error: 'data obrigatória.' });
 
-  const dow = new Date(data + 'T12:00:00').getDay();
+    const dow = new Date(data + 'T12:00:00').getDay();
 
-  const disp = await pool.query(
-    `SELECT * FROM quadra_disponibilidade WHERE quadra_id=$1 AND $2 = ANY(dias_semana)`,
-    [req.params.id, dow]
-  );
+    const disp = await pool.query(
+      `SELECT * FROM quadra_disponibilidade WHERE quadra_id=$1 AND $2 = ANY(dias_semana)`,
+      [req.params.id, dow]
+    );
 
-  if (!disp.rows.length) return res.json({ disponivel: false, slots: [] });
+    if (!disp.rows.length) return res.json({ disponivel: false, slots: [] });
 
-  const row = disp.rows[0];
-  const hi  = row.hi_text || intToTime(row.hora_inicio);
-  const hf  = row.hf_text || intToTime(row.hora_fim);
-  if (!hi || !hf) return res.json({ disponivel: false, slots: [] });
+    const row = disp.rows[0];
+    const hi  = intToTime(row.hora_inicio);
+    const hf  = intToTime(row.hora_fim);
+    if (!hi || !hf) return res.json({ disponivel: false, slots: [] });
 
-  const todosSlots = gerarSlots30(hi, hf);
+    const todosSlots = gerarSlots30(hi, hf);
 
-  const [reservas, bloqueios] = await Promise.all([
-    pool.query(
-      `SELECT hora_inicio, hora_fim, status FROM quadra_reservas
-       WHERE quadra_id=$1 AND data=$2 AND status NOT IN ('cancelada')`,
-      [req.params.id, data]
-    ),
-    pool.query(
-      `SELECT hi_text, hf_text, hora_inicio, hora_fim FROM quadra_bloqueios
-       WHERE quadra_id=$1 AND data=$2`,
-      [req.params.id, data]
-    ),
-  ]);
+    const [reservas, bloqueios] = await Promise.all([
+      pool.query(
+        `SELECT hora_inicio, hora_fim, status FROM quadra_reservas
+         WHERE quadra_id=$1 AND data=$2 AND status NOT IN ('cancelada')`,
+        [req.params.id, data]
+      ),
+      pool.query(
+        `SELECT hora_inicio, hora_fim FROM quadra_bloqueios
+         WHERE quadra_id=$1 AND data=$2`,
+        [req.params.id, data]
+      ),
+    ]);
 
-  const slotStatus: Record<string, string> = {};
+    const slotStatus: Record<string, string> = {};
 
-  bloqueios.rows.forEach(b => {
-    const bHi = b.hi_text || intToTime(b.hora_inicio);
-    const bHf = b.hf_text || intToTime(b.hora_fim);
-    if (bHi && bHf) gerarSlots30(bHi, bHf).forEach(s => { slotStatus[s] = 'bloqueado'; });
-  });
-
-  reservas.rows.forEach(r => {
-    if (!r.hora_inicio || !r.hora_fim) return;
-    gerarSlots30(r.hora_inicio, r.hora_fim).forEach(s => {
-      if (!slotStatus[s]) slotStatus[s] = r.status;
+    bloqueios.rows.forEach(b => {
+      const bHi = intToTime(b.hora_inicio);
+      const bHf = intToTime(b.hora_fim);
+      if (bHi && bHf) gerarSlots30(bHi, bHf).forEach(s => { slotStatus[s] = 'bloqueado'; });
     });
-  });
 
-  const result = todosSlots.map(s => ({
-    hora_inicio: s,
-    status: slotStatus[s] || 'livre',
-  }));
+    reservas.rows.forEach(r => {
+      if (!r.hora_inicio || !r.hora_fim) return;
+      gerarSlots30(r.hora_inicio, r.hora_fim).forEach(s => {
+        if (!slotStatus[s]) slotStatus[s] = r.status;
+      });
+    });
 
-  res.json({ disponivel: true, slots: result, hi, hf });
+    const result = todosSlots.map(s => ({
+      hora_inicio: s,
+      status: slotStatus[s] || 'livre',
+    }));
+
+    res.json({ disponivel: true, slots: result, hi, hf });
+  } catch (e) {
+    console.error('[GET /:id/slots]', e);
+    res.status(500).json({ error: 'Erro ao carregar slots.' });
+  }
 });
 
 // =============================================================================
@@ -278,9 +283,9 @@ router.post('/bloqueios', async (req: Request, res: Response) => {
   const hora_fim    = parseInt(hf_text.split(':')[0]);
 
   const result = await pool.query(
-    `INSERT INTO quadra_bloqueios (quadra_id, data, hora_inicio, hora_fim, hi_text, hf_text, motivo)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [quadra_id, data, hora_inicio, hora_fim, hi_text, hf_text, motivo ?? null]
+    `INSERT INTO quadra_bloqueios (quadra_id, data, hora_inicio, hora_fim, motivo)
+     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [quadra_id, data, hora_inicio, hora_fim, motivo ?? null]
   );
   res.status(201).json(result.rows[0]);
 });
