@@ -168,7 +168,7 @@ router.get('/:id/slots', async (req: Request, res: Response) => {
       });
     });
 
-    // ── Aulas confirmadas na agenda também ocupam a quadra ────────────────────
+    // ── Agenda do Carlão também ocupa a quadra ───────────────────────────────
     const localRow = await pool.query(
       `SELECT l.admin_email FROM locais l
        JOIN quadras q ON q.local_id = l.id
@@ -177,6 +177,8 @@ router.get('/:id/slots', async (req: Request, res: Response) => {
     );
     if (localRow.rows.length) {
       const adminEmail = localRow.rows[0].admin_email;
+
+      // 1) Reservas de aula confirmadas por alunos
       const aulas = await pool.query(
         `SELECT hora_inicio::text, hora_fim::text
          FROM agenda_inscricoes
@@ -186,6 +188,35 @@ router.get('/:id/slots', async (req: Request, res: Response) => {
       aulas.rows.forEach(a => {
         if (!a.hora_inicio || !a.hora_fim) return;
         gerarSlots30(a.hora_inicio.slice(0, 5), a.hora_fim.slice(0, 5))
+          .forEach(s => { if (!slotStatus[s]) slotStatus[s] = 'confirmada'; });
+      });
+
+      // 2) Horários fixos semanais (agenda_horarios_fixos) — independente de ter aluno confirmado
+      const fixos = await pool.query(
+        `SELECT hora_inicio::text, hora_fim::text
+         FROM agenda_horarios_fixos
+         WHERE admin_email = $1
+           AND dia_semana  = $2
+           AND ativo       = true
+           AND (valido_de  IS NULL OR valido_de::date  <= $3::date)
+           AND (valido_ate IS NULL OR valido_ate::date >= $3::date)`,
+        [adminEmail, dow, data]
+      );
+
+      // Slots cancelados neste dia específico via override
+      const overrides = await pool.query(
+        `SELECT hora_inicio::text FROM agenda_slot_override
+         WHERE admin_email = $1 AND data = $2 AND status = 'cancelado'`,
+        [adminEmail, data]
+      );
+      const cancelados = new Set(
+        overrides.rows.map((o: any) => (o.hora_inicio ?? '').slice(0, 5))
+      );
+
+      fixos.rows.forEach(f => {
+        if (!f.hora_inicio || !f.hora_fim) return;
+        if (cancelados.has(f.hora_inicio.slice(0, 5))) return;
+        gerarSlots30(f.hora_inicio.slice(0, 5), f.hora_fim.slice(0, 5))
           .forEach(s => { if (!slotStatus[s]) slotStatus[s] = 'confirmada'; });
       });
     }
