@@ -168,6 +168,29 @@ router.get('/:id/slots', async (req: Request, res: Response) => {
       });
     });
 
+    // ── Aulas confirmadas na agenda também ocupam a quadra ────────────────────
+    const localRow = await pool.query(
+      `SELECT l.admin_email FROM locais l
+       JOIN quadras q ON q.local_id = l.id
+       WHERE q.id = $1`,
+      [req.params.id]
+    );
+    if (localRow.rows.length) {
+      const adminEmail = localRow.rows[0].admin_email;
+      const aulas = await pool.query(
+        `SELECT hora_inicio::text, hora_fim::text
+         FROM agenda_inscricoes
+         WHERE admin_email = $1 AND data = $2 AND status = 'confirmada'`,
+        [adminEmail, data]
+      );
+      aulas.rows.forEach(a => {
+        if (!a.hora_inicio || !a.hora_fim) return;
+        gerarSlots30(a.hora_inicio.slice(0, 5), a.hora_fim.slice(0, 5))
+          .forEach(s => { if (!slotStatus[s]) slotStatus[s] = 'confirmada'; });
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     const result = todosSlots.map(s => ({
       hora_inicio: s,
       status: slotStatus[s] || 'livre',
