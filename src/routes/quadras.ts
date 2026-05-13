@@ -36,17 +36,31 @@ function intToTime(h: number): string {
 router.get('/locais/todos', async (_req: Request, res: Response) => {
   try {
     const result = await pool.query(
-      `SELECT l.id, l.nome, l.endereco, l.observacao, l.socios_only,
+      `SELECT
+              l.id,
+              l.nome,
+              l.endereco,
+              l.observacao,
+              l.socios_only,
+              l.admin_email AS responsavel_email,
+              u.nome AS responsavel_nome,
+              u.telefone AS responsavel_telefone,
               COALESCE(json_agg(
                 json_build_object('id',q.id,'nome',q.nome,'preco_hora',q.preco_hora)
               ) FILTER (WHERE q.id IS NOT NULL), '[]') AS quadras
        FROM locais l
+       LEFT JOIN users u ON LOWER(u.email) = LOWER(l.admin_email)
        LEFT JOIN quadras q ON q.local_id = l.id AND q.ativa = true
        WHERE l.ativo = true
-       GROUP BY l.id ORDER BY l.id`
+       GROUP BY l.id, u.nome, u.telefone
+       ORDER BY l.id`
     );
+
     res.json(result.rows);
-  } catch { res.status(500).json({ error: 'Erro ao buscar locais.' }); }
+  } catch (e) {
+    console.error('[GET /quadras/locais/todos]', e);
+    res.status(500).json({ error: 'Erro ao buscar locais.' });
+  }
 });
 
 // GET /quadras/locais — admin
