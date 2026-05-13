@@ -15,13 +15,14 @@ const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 // ---------------------------------------------------------------------------
 function formatUser(u: any) {
   return {
-    id:         u.id,
-    nome:       u.nome,
-    email:      u.email,
-    role:       u.role,
-    foto_url:   u.foto_url ?? null,
-    localidade: u.localidade ?? null,
-    telefone:   u.telefone ?? null,
+    id:              u.id,
+    nome:            u.nome,
+    email:           u.email,
+    role:            u.role,
+    foto_url:        u.foto_url ?? null,
+    localidade:      u.localidade ?? null,
+    telefone:        u.telefone ?? null,
+    plano_expira_em: u.plano_expira_em ?? null,
   };
 }
 
@@ -137,7 +138,7 @@ router.get('/me', async (req: Request, res: Response) => {
   try {
     const payload = jwt.verify(auth.slice(7), JWT_SECRET) as { user_id: number; role: string };
     const result  = await pool.query(
-      `SELECT id, nome, email, role, active, foto_url, localidade, telefone
+      `SELECT id, nome, email, role, active, foto_url, localidade, telefone, plano_expira_em
        FROM users WHERE id = $1`,
       [payload.user_id]
     );
