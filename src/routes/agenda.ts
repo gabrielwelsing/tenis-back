@@ -74,7 +74,6 @@ async function buildSlotsDodia(admin_email: string, data: string, isAdmin: boole
 
     let perto1h = false;
     if (isHoje) {
-      const [hh, mm] = hi.split(':').map(Number);
       const slotTime = new Date(data + 'T' + hi);
       const diffMs   = slotTime.getTime() - agora.getTime();
       perto1h = diffMs > 0 && diffMs <= 3_600_000;
@@ -566,16 +565,91 @@ router.get('/atividades', async (req: Request, res: Response) => {
        LIMIT 80`,
       [email, isAdmin]
     );
-    res.json(result.rows.map(row => ({
+
+    const atividades = result.rows.map(row => ({
       ...row,
       horarioInicio: String(row.horarioInicio).slice(0, 5),
       horarioFim:    String(row.horarioFim).slice(0, 5),
-    })));
+      alunoNome:     row.pessoaNome ?? null,
+      alunoEmail:    row.pessoaEmail ?? null,
+    }));
+
+    if (isAdmin) {
+      const fixos = await pool.query(
+        `WITH ocorrencias AS (
+           SELECT
+             f.id,
+             f.admin_email,
+             f.nome,
+             f.email_vinculado,
+             f.hora_inicio,
+             f.hora_fim,
+             gs::date AS data_ocorrencia
+           FROM agenda_horarios_fixos f
+           CROSS JOIN generate_series(CURRENT_DATE, CURRENT_DATE + INTERVAL '56 days', INTERVAL '1 day') gs
+           WHERE LOWER(f.admin_email) = LOWER($1)
+             AND f.ativo = true
+             AND (f.nome IS NOT NULL OR f.email_vinculado IS NOT NULL)
+             AND EXTRACT(DOW FROM gs)::int = f.dia_semana
+             AND (f.valido_de IS NULL OR gs::date >= f.valido_de::date)
+             AND (f.valido_ate IS NULL OR gs::date <= f.valido_ate::date)
+             AND NOT EXISTS (
+               SELECT 1
+               FROM agenda_slot_override ov
+               WHERE LOWER(ov.admin_email) = LOWER(f.admin_email)
+                 AND ov.data = gs::date
+                 AND ov.hora_inicio = f.hora_inicio
+                 AND ov.status = 'cancelado'
+             )
+         )
+         SELECT
+           ('agenda-fixo-' || id::text || '-' || TO_CHAR(data_ocorrencia, 'YYYY-MM-DD')) AS id,
+           id AS "origemId",
+           'aula' AS tipo,
+           data_ocorrencia::text AS "dataInicio",
+           NULL::text AS "dataFim",
+           hora_inicio::text AS "horarioInicio",
+           hora_fim::text AS "horarioFim",
+           'Agenda do Prof. Carlão' AS local,
+           ('Aula com ' || COALESCE(nome, split_part(email_vinculado,'@',1),'aluno')) AS titulo,
+           email_vinculado AS "pessoaEmail",
+           COALESCE(nome, split_part(email_vinculado,'@',1),'aluno') AS "pessoaNome",
+           COALESCE(nome, split_part(email_vinculado,'@',1),'aluno') AS "alunoNome",
+           email_vinculado AS "alunoEmail",
+           'fixo' AS status,
+           false AS passado
+         FROM ocorrencias
+         WHERE data_ocorrencia > CURRENT_DATE
+            OR (data_ocorrencia = CURRENT_DATE AND hora_fim > NOW()::TIME)
+         ORDER BY data_ocorrencia ASC, hora_inicio ASC
+         LIMIT 80`,
+        [email]
+      );
+
+      fixos.rows.forEach(row => {
+        atividades.push({
+          ...row,
+          horarioInicio: String(row.horarioInicio).slice(0, 5),
+          horarioFim:    String(row.horarioFim).slice(0, 5),
+        });
+      });
+    }
+
+    atividades.sort((a, b) => {
+      const dataA = `${String(a.dataInicio).slice(0, 10)}T${String(a.horarioInicio || '00:00').slice(0, 5)}:00`;
+      const dataB = `${String(b.dataInicio).slice(0, 10)}T${String(b.horarioInicio || '00:00').slice(0, 5)}:00`;
+      const aPassado = a.passado ? 1 : 0;
+      const bPassado = b.passado ? 1 : 0;
+      return aPassado - bPassado || new Date(dataA).getTime() - new Date(dataB).getTime();
+    });
+
+    res.json(atividades.slice(0, 80));
   } catch (e) {
     console.error('[GET /agenda/atividades]', e);
     res.status(500).json({ error: 'Erro ao carregar atividades da agenda.' });
   }
 });
+
 // ── Helper: gera datas futuras de uma recorrência semanal ────────────────────
 function proximasOcorrencias(dia_semana: number, valido_de: string | null, valido_ate: string | null): string[] {
   const hoje = new Date().toISOString().split('T')[0];
