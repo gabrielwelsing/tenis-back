@@ -128,6 +128,42 @@ router.post('/google', async (req: Request, res: Response) => {
   }
 });
 
+
+// ---------------------------------------------------------------------------
+// GET /auth/users/search?q=nome — busca usuários ativos para autocomplete
+// ---------------------------------------------------------------------------
+router.get('/users/search', async (req: Request, res: Response) => {
+  const q = String(req.query.q ?? '').trim();
+
+  if (q.length < 2) return res.json([]);
+
+  try {
+    const result = await pool.query(
+      `SELECT id, nome, email, foto_url, telefone
+       FROM users
+       WHERE active = true
+         AND (
+           LOWER(nome) LIKE LOWER($1)
+           OR LOWER(email) LIKE LOWER($1)
+         )
+       ORDER BY nome ASC
+       LIMIT 8`,
+      [q + '%']
+    );
+
+    return res.json(result.rows.map(u => ({
+      id: u.id,
+      nome: u.nome,
+      email: u.email,
+      foto_url: u.foto_url ?? null,
+      telefone: u.telefone ?? null,
+    })));
+  } catch (e) {
+    console.error('[Auth users search]', e);
+    return res.status(500).json({ error: 'Erro ao buscar usuários.' });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // GET /auth/me
 // ---------------------------------------------------------------------------
