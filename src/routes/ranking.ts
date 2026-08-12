@@ -7,10 +7,80 @@
 import { Router, Request, Response } from 'express';
 import { Pool } from 'pg';
 import jwt from 'jsonwebtoken';
+import * as nodemailer from 'nodemailer';
 
 const router     = Router();
 const pool       = new Pool({ connectionString: process.env.DATABASE_URL });
 const JWT_SECRET = process.env.JWT_SECRET ?? 'floquinho1@';
+
+// ─── Email helper ─────────────────────────────────────────────────────────────
+function criarTransporterEmail() {
+  const host = process.env.SMTP_HOST;
+  const port = Number(process.env.SMTP_PORT ?? 465);
+  const secure =
+    String(process.env.SMTP_SECURE ?? 'true').toLowerCase() === 'true';
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+
+  if (!host || !user || !pass) {
+    return null;
+  }
+
+  return nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: {
+      user,
+      pass,
+    },
+  });
+}
+
+function formatarDataEmail(data: string): string {
+  const valor = String(data ?? '').slice(0, 10);
+  const partes = valor.split('-');
+
+  if (partes.length !== 3) return valor;
+
+  return `${partes[2]}/${partes[1]}/${partes[0]}`;
+}
+
+async function enviarEmailNovoDesafio(params: {
+  desafiadoNome: string;
+  desafiadoEmail: string;
+  desafianteNome: string;
+  data: string;
+  horario: string;
+  local: string;
+}) {
+  const transporter = criarTransporterEmail();
+
+  if (!transporter) {
+    console.warn(
+      '[EMAIL DESAFIO] SMTP não configurado. E-mail não enviado.',
+    );
+    return;
+  }
+
+  const dataFormatada = formatarDataEmail(params.data);
+  const horarioFormatado = String(params.horario ?? '').slice(0, 5);
+
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM ?? process.env.SMTP_USER ?? 'adm@sup-ia.com',
+    to: params.desafiadoEmail,
+    subject: 'Você recebeu um novo desafio 🎾',
+    text: `Olá, ${params.desafiadoNome}.
+
+${params.desafianteNome} acabou de te desafiar para uma partida.
+
+Data sugerida: ${dataFormatada}
+Horário: ${horarioFormatado}
+Local: ${params.local}
+
+Acesse o app para aceitar ou recusar o desafio.`,
+  });
+}
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 function getAuth(req: Request): { user_id: number; role: string } | null {
@@ -75,15 +145,26 @@ function calcularPontos(
 }
 
 // ─── Determine winner from placar ─────────────────────────────────────────────
-function determinarVencedor(placar: SetScore[], jogadorAId: number, jogadorBId: number): number {
+function determinarVencedor(
+  placar: SetScore[],
+  jogadorAId: number,
+  jogadorBId: number,
+): number {
   const setsA = placar.filter(s => s.setA > s.setB).length;
   const setsB = placar.filter(s => s.setB > s.setA).length;
   return setsA > setsB ? jogadorAId : jogadorBId;
 }
 
 // ─── Verify liga admin ────────────────────────────────────────────────────────
-async function isLigaAdmin(ligaId: string, userId: number): Promise<boolean> {
-  const r = await pool.query(`SELECT id FROM ligas WHERE id=$1 AND admin_id=$2`, [ligaId, userId]);
+async function isLigaAdmin(
+  ligaId: string,
+  userId: number,
+): Promise<boolean> {
+  const r = await pool.query(
+    `SELECT id FROM ligas WHERE id=$1 AND admin_id=$2`,
+    [ligaId, userId],
+  );
+
   return r.rows.length > 0;
 }
 
@@ -95,15 +176,26 @@ async function isLigaAdmin(ligaId: string, userId: number): Promise<boolean> {
 router.post('/ligas', async (req: Request, res: Response) => {
   const p = getAuth(req);
   if (!p) return res.status(401).json({ error: 'Token ausente.' });
-  if (p.role !== 'admin') return res.status(403).json({ error: 'Apenas admins podem criar ligas.' });
+
+  if (p.role !== 'admin')
+    return res.status(403).json({
+      error: 'Apenas admins podem criar ligas.',
+    });
 
   const { nome } = req.body;
-  if (!nome?.trim()) return res.status(400).json({ error: 'nome obrigatório.' });
+
+  if (!nome?.trim())
+    return res.status(400).json({
+      error: 'nome obrigatório.',
+    });
 
   const r = await pool.query(
-    `INSERT INTO ligas (admin_id, nome) VALUES ($1, $2) RETURNING *`,
+    `INSERT INTO ligas (admin_id, nome)
+     VALUES ($1, $2)
+     RETURNING *`,
     [p.user_id, nome.trim()],
   );
+
   res.status(201).json({ data: r.rows[0] });
 });
 
@@ -116,19 +208,32 @@ router.get('/ligas', async (req: Request, res: Response) => {
     `SELECT DISTINCT l.*,
             (l.admin_id = $1) AS is_admin,
             u.nome AS admin_nome,
-            (SELECT t.id FROM temporadas t WHERE t.liga_id = l.id AND t.ativa = true LIMIT 1)
-              AS temporada_ativa_id,
-            (SELECT t.nome FROM temporadas t WHERE t.liga_id = l.id AND t.ativa = true LIMIT 1)
-              AS temporada_ativa_nome,
-            (SELECT COUNT(*) FROM membros_liga ml2 WHERE ml2.liga_id = l.id AND ml2.ativo = true)
-              AS total_membros
+            (SELECT t.id
+             FROM temporadas t
+             WHERE t.liga_id = l.id
+               AND t.ativa = true
+             LIMIT 1) AS temporada_ativa_id,
+            (SELECT t.nome
+             FROM temporadas t
+             WHERE t.liga_id = l.id
+               AND t.ativa = true
+             LIMIT 1) AS temporada_ativa_nome,
+            (SELECT COUNT(*)
+             FROM membros_liga ml2
+             WHERE ml2.liga_id = l.id
+               AND ml2.ativo = true) AS total_membros
      FROM ligas l
      JOIN users u ON u.id = l.admin_id
-     LEFT JOIN membros_liga ml ON ml.liga_id = l.id AND ml.user_id = $1 AND ml.ativo = true
-     WHERE l.admin_id = $1 OR ml.user_id = $1
+     LEFT JOIN membros_liga ml
+       ON ml.liga_id = l.id
+      AND ml.user_id = $1
+      AND ml.ativo = true
+     WHERE l.admin_id = $1
+        OR ml.user_id = $1
      ORDER BY l.created_at DESC`,
     [p.user_id],
   );
+
   res.json({ data: r.rows });
 });
 
@@ -138,14 +243,22 @@ router.get('/ligas/:ligaId/membros', async (req: Request, res: Response) => {
   if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
   const r = await pool.query(
-    `SELECT ml.id AS membro_id, ml.user_id, ml.classe, ml.ativo, ml.entrada_em,
-            u.nome, u.email, u.foto_url
+    `SELECT ml.id AS membro_id,
+            ml.user_id,
+            ml.classe,
+            ml.ativo,
+            ml.entrada_em,
+            u.nome,
+            u.email,
+            u.foto_url
      FROM membros_liga ml
      JOIN users u ON u.id = ml.user_id
-     WHERE ml.liga_id = $1 AND ml.ativo = true
+     WHERE ml.liga_id = $1
+       AND ml.ativo = true
      ORDER BY u.nome`,
     [req.params.ligaId],
   );
+
   res.json({ data: r.rows });
 });
 
@@ -153,149 +266,284 @@ router.get('/ligas/:ligaId/membros', async (req: Request, res: Response) => {
 router.post('/ligas/:ligaId/membros', async (req: Request, res: Response) => {
   const p = getAuth(req);
   if (!p) return res.status(401).json({ error: 'Token ausente.' });
+
   if (!(await isLigaAdmin(String(req.params.ligaId), p.user_id)))
-    return res.status(403).json({ error: 'Apenas o admin da liga pode adicionar membros.' });
+    return res.status(403).json({
+      error: 'Apenas o admin da liga pode adicionar membros.',
+    });
 
   const { email, classe } = req.body;
-  if (!email) return res.status(400).json({ error: 'email obrigatório.' });
 
-  const u = await pool.query(`SELECT id FROM users WHERE email = $1`, [email.trim().toLowerCase()]);
-  if (!u.rows.length) return res.status(404).json({ error: 'Usuário não encontrado.' });
+  if (!email)
+    return res.status(400).json({
+      error: 'email obrigatório.',
+    });
+
+  const u = await pool.query(
+    `SELECT id FROM users WHERE email = $1`,
+    [email.trim().toLowerCase()],
+  );
+
+  if (!u.rows.length)
+    return res.status(404).json({
+      error: 'Usuário não encontrado.',
+    });
 
   const userId = u.rows[0].id;
+
   const r = await pool.query(
     `INSERT INTO membros_liga (liga_id, user_id, classe)
      VALUES ($1, $2, $3)
-     ON CONFLICT (liga_id, user_id) DO UPDATE SET ativo=true, classe=EXCLUDED.classe
+     ON CONFLICT (liga_id, user_id)
+     DO UPDATE SET ativo=true, classe=EXCLUDED.classe
      RETURNING *`,
-    [req.params.ligaId, userId, classe ?? 'intermediario'],
+    [
+      req.params.ligaId,
+      userId,
+      classe ?? 'intermediario',
+    ],
   );
+
   res.status(201).json({ data: r.rows[0] });
 });
 
 // DELETE /ranking/ligas/:ligaId/membros/:userId — admin remove membro
-router.delete('/ligas/:ligaId/membros/:userId', async (req: Request, res: Response) => {
-  const p = getAuth(req);
-  if (!p) return res.status(401).json({ error: 'Token ausente.' });
-  if (!(await isLigaAdmin(String(req.params.ligaId), p.user_id)))
-    return res.status(403).json({ error: 'Apenas o admin da liga pode remover membros.' });
+router.delete(
+  '/ligas/:ligaId/membros/:userId',
+  async (req: Request, res: Response) => {
+    const p = getAuth(req);
+    if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
-  await pool.query(
-    `UPDATE membros_liga SET ativo=false WHERE liga_id=$1 AND user_id=$2`,
-    [req.params.ligaId, req.params.userId],
-  );
-  res.json({ data: { ok: true } });
-});
+    if (!(await isLigaAdmin(String(req.params.ligaId), p.user_id)))
+      return res.status(403).json({
+        error: 'Apenas o admin da liga pode remover membros.',
+      });
+
+    await pool.query(
+      `UPDATE membros_liga
+       SET ativo=false
+       WHERE liga_id=$1
+         AND user_id=$2`,
+      [req.params.ligaId, req.params.userId],
+    );
+
+    res.json({ data: { ok: true } });
+  },
+);
 
 // PATCH /ranking/ligas/:ligaId/membros/:userId — admin altera classe
-router.patch('/ligas/:ligaId/membros/:userId', async (req: Request, res: Response) => {
-  const p = getAuth(req);
-  if (!p) return res.status(401).json({ error: 'Token ausente.' });
-  if (!(await isLigaAdmin(String(req.params.ligaId), p.user_id)))
-    return res.status(403).json({ error: 'Apenas o admin da liga pode alterar classes.' });
+router.patch(
+  '/ligas/:ligaId/membros/:userId',
+  async (req: Request, res: Response) => {
+    const p = getAuth(req);
+    if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
-  const { classe } = req.body;
-  if (!classe) return res.status(400).json({ error: 'classe obrigatória.' });
+    if (!(await isLigaAdmin(String(req.params.ligaId), p.user_id)))
+      return res.status(403).json({
+        error: 'Apenas o admin da liga pode alterar classes.',
+      });
 
-  const r = await pool.query(
-    `UPDATE membros_liga SET classe=$1 WHERE liga_id=$2 AND user_id=$3 RETURNING *`,
-    [classe, req.params.ligaId, req.params.userId],
-  );
-  if (!r.rows.length) return res.status(404).json({ error: 'Membro não encontrado.' });
-  res.json({ data: r.rows[0] });
-});
+    const { classe } = req.body;
+
+    if (!classe)
+      return res.status(400).json({
+        error: 'classe obrigatória.',
+      });
+
+    const r = await pool.query(
+      `UPDATE membros_liga
+       SET classe=$1
+       WHERE liga_id=$2
+         AND user_id=$3
+       RETURNING *`,
+      [
+        classe,
+        req.params.ligaId,
+        req.params.userId,
+      ],
+    );
+
+    if (!r.rows.length)
+      return res.status(404).json({
+        error: 'Membro não encontrado.',
+      });
+
+    res.json({ data: r.rows[0] });
+  },
+);
 
 // =============================================================================
 // TEMPORADAS
 // =============================================================================
 
 // POST /ranking/ligas/:ligaId/temporadas — admin cria temporada
-router.post('/ligas/:ligaId/temporadas', async (req: Request, res: Response) => {
-  const p = getAuth(req);
-  if (!p) return res.status(401).json({ error: 'Token ausente.' });
-  if (!(await isLigaAdmin(String(req.params.ligaId), p.user_id)))
-    return res.status(403).json({ error: 'Apenas o admin da liga pode criar temporadas.' });
+router.post(
+  '/ligas/:ligaId/temporadas',
+  async (req: Request, res: Response) => {
+    const p = getAuth(req);
+    if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
-  const { nome, data_inicio, data_fim } = req.body;
-  if (!nome || !data_inicio || !data_fim)
-    return res.status(400).json({ error: 'nome, data_inicio e data_fim obrigatórios.' });
+    if (!(await isLigaAdmin(String(req.params.ligaId), p.user_id)))
+      return res.status(403).json({
+        error: 'Apenas o admin da liga pode criar temporadas.',
+      });
 
-  const ativa = await pool.query(
-    `SELECT id FROM temporadas WHERE liga_id=$1 AND ativa=true`,
-    [req.params.ligaId],
-  );
-  if (ativa.rows.length)
-    return res.status(409).json({ error: 'Já existe uma temporada ativa nesta liga.' });
+    const { nome, data_inicio, data_fim } = req.body;
 
-  const r = await pool.query(
-    `INSERT INTO temporadas (liga_id, nome, data_inicio, data_fim)
-     VALUES ($1,$2,$3,$4) RETURNING *`,
-    [req.params.ligaId, nome.trim(), data_inicio, data_fim],
-  );
-  res.status(201).json({ data: r.rows[0] });
-});
+    if (!nome || !data_inicio || !data_fim)
+      return res.status(400).json({
+        error: 'nome, data_inicio e data_fim obrigatórios.',
+      });
+
+    const ativa = await pool.query(
+      `SELECT id
+       FROM temporadas
+       WHERE liga_id=$1
+         AND ativa=true`,
+      [req.params.ligaId],
+    );
+
+    if (ativa.rows.length)
+      return res.status(409).json({
+        error: 'Já existe uma temporada ativa nesta liga.',
+      });
+
+    const r = await pool.query(
+      `INSERT INTO temporadas
+         (liga_id, nome, data_inicio, data_fim)
+       VALUES ($1,$2,$3,$4)
+       RETURNING *`,
+      [
+        req.params.ligaId,
+        nome.trim(),
+        data_inicio,
+        data_fim,
+      ],
+    );
+
+    res.status(201).json({ data: r.rows[0] });
+  },
+);
 
 // GET /ranking/ligas/:ligaId/temporadas — lista temporadas
-router.get('/ligas/:ligaId/temporadas', async (req: Request, res: Response) => {
-  const p = getAuth(req);
-  if (!p) return res.status(401).json({ error: 'Token ausente.' });
+router.get(
+  '/ligas/:ligaId/temporadas',
+  async (req: Request, res: Response) => {
+    const p = getAuth(req);
+    if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
-  const r = await pool.query(
-    `SELECT t.*,
-            (SELECT COUNT(*) FROM partidas pa WHERE pa.temporada_id = t.id) AS total_partidas
-     FROM temporadas t
-     WHERE t.liga_id = $1
-     ORDER BY t.created_at DESC`,
-    [req.params.ligaId],
-  );
-  res.json({ data: r.rows });
-});
+    const r = await pool.query(
+      `SELECT t.*,
+              (SELECT COUNT(*)
+               FROM partidas pa
+               WHERE pa.temporada_id = t.id) AS total_partidas
+       FROM temporadas t
+       WHERE t.liga_id = $1
+       ORDER BY t.created_at DESC`,
+      [req.params.ligaId],
+    );
+
+    res.json({ data: r.rows });
+  },
+);
 
 // PATCH /ranking/ligas/:ligaId/temporadas/:id — encerra temporada
-router.patch('/ligas/:ligaId/temporadas/:id', async (req: Request, res: Response) => {
-  const p = getAuth(req);
-  if (!p) return res.status(401).json({ error: 'Token ausente.' });
-  if (!(await isLigaAdmin(String(req.params.ligaId), p.user_id)))
-    return res.status(403).json({ error: 'Apenas o admin da liga pode encerrar temporadas.' });
+router.patch(
+  '/ligas/:ligaId/temporadas/:id',
+  async (req: Request, res: Response) => {
+    const p = getAuth(req);
+    if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
-  const r = await pool.query(
-    `UPDATE temporadas SET ativa=false WHERE id=$1 AND liga_id=$2 RETURNING *`,
-    [req.params.id, req.params.ligaId],
-  );
-  if (!r.rows.length) return res.status(404).json({ error: 'Temporada não encontrada.' });
-  res.json({ data: r.rows[0] });
-});
+    if (!(await isLigaAdmin(String(req.params.ligaId), p.user_id)))
+      return res.status(403).json({
+        error: 'Apenas o admin da liga pode encerrar temporadas.',
+      });
+
+    const r = await pool.query(
+      `UPDATE temporadas
+       SET ativa=false
+       WHERE id=$1
+         AND liga_id=$2
+       RETURNING *`,
+      [
+        req.params.id,
+        req.params.ligaId,
+      ],
+    );
+
+    if (!r.rows.length)
+      return res.status(404).json({
+        error: 'Temporada não encontrada.',
+      });
+
+    res.json({ data: r.rows[0] });
+  },
+);
 
 // =============================================================================
 // PARTIDAS
 // =============================================================================
 
-// POST /ranking/partidas/mural — registra partida originada do Mural (busca adversário por email)
+// POST /ranking/partidas/mural — registra partida originada do Mural
 router.post('/partidas/mural', async (req: Request, res: Response) => {
   const p = getAuth(req);
   if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
-  const { temporada_id, email_b, placar, tipo_partida, wo, eu_ganhei, vencedor_e_a, data_partida } = req.body;
-  if (!temporada_id || !email_b || !tipo_partida || !data_partida)
-    return res.status(400).json({ error: 'temporada_id, email_b, tipo_partida e data_partida obrigatórios.' });
+  const {
+    temporada_id,
+    email_b,
+    placar,
+    tipo_partida,
+    wo,
+    eu_ganhei,
+    vencedor_e_a,
+    data_partida,
+  } = req.body;
 
-  const uB = await pool.query(`SELECT id FROM users WHERE email = $1`, [email_b.trim().toLowerCase()]);
-  if (!uB.rows.length) return res.status(404).json({ error: 'Adversário não encontrado no sistema.' });
+  if (!temporada_id || !email_b || !tipo_partida || !data_partida)
+    return res.status(400).json({
+      error:
+        'temporada_id, email_b, tipo_partida e data_partida obrigatórios.',
+    });
+
+  const uB = await pool.query(
+    `SELECT id FROM users WHERE email = $1`,
+    [email_b.trim().toLowerCase()],
+  );
+
+  if (!uB.rows.length)
+    return res.status(404).json({
+      error: 'Adversário não encontrado no sistema.',
+    });
+
   const jogadorBId = uB.rows[0].id as number;
   const jogadorAId = p.user_id;
 
-  if (jogadorAId === jogadorBId) return res.status(400).json({ error: 'Os dois jogadores devem ser diferentes.' });
+  if (jogadorAId === jogadorBId)
+    return res.status(400).json({
+      error: 'Os dois jogadores devem ser diferentes.',
+    });
 
   let vencedorId: number;
+
   if (wo) {
     vencedorId = eu_ganhei ? jogadorAId : jogadorBId;
   } else if (vencedor_e_a !== undefined) {
     vencedorId = vencedor_e_a ? jogadorAId : jogadorBId;
   } else {
-    vencedorId = determinarVencedor(placar as SetScore[], jogadorAId, jogadorBId);
+    vencedorId = determinarVencedor(
+      placar as SetScore[],
+      jogadorAId,
+      jogadorBId,
+    );
   }
 
-  const { pontosA, pontosB, bonusA, bonusB } = calcularPontos(
+  const {
+    pontosA,
+    pontosB,
+    bonusA,
+    bonusB,
+  } = calcularPontos(
     wo ? [] : (placar as SetScore[]),
     tipo_partida,
     Boolean(wo),
@@ -309,10 +557,25 @@ router.post('/partidas/mural', async (req: Request, res: Response) => {
        (temporada_id, jogador_a_id, jogador_b_id, placar, tipo_partida,
         vencedor_id, wo, pontos_a, pontos_b, bonus_a, bonus_b, data_partida,
         confirmado_a, confirmado_b, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,true,false,'pendente') RETURNING *`,
-    [temporada_id, jogadorAId, jogadorBId, wo ? null : JSON.stringify(placar), tipo_partida,
-     vencedorId, Boolean(wo), pontosA, pontosB, bonusA, bonusB, data_partida],
+     VALUES
+       ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,true,false,'pendente')
+     RETURNING *`,
+    [
+      temporada_id,
+      jogadorAId,
+      jogadorBId,
+      wo ? null : JSON.stringify(placar),
+      tipo_partida,
+      vencedorId,
+      Boolean(wo),
+      pontosA,
+      pontosB,
+      bonusA,
+      bonusB,
+      data_partida,
+    ],
   );
+
   res.status(201).json({ data: r.rows[0] });
 });
 
@@ -324,88 +587,174 @@ router.post('/partidas/mural', async (req: Request, res: Response) => {
 router.post('/rodadas', async (req: Request, res: Response) => {
   const p = getAuth(req);
   if (!p) return res.status(401).json({ error: 'Token ausente.' });
-  if (p.role !== 'admin') return res.status(403).json({ error: 'Apenas admins.' });
 
-  const { temporada_id, participantes } = req.body as { temporada_id: string; participantes: number[] };
-  if (!temporada_id || !Array.isArray(participantes) || participantes.length < 2)
-    return res.status(400).json({ error: 'temporada_id e ao menos 2 participantes obrigatórios.' });
+  if (p.role !== 'admin')
+    return res.status(403).json({
+      error: 'Apenas admins.',
+    });
+
+  const {
+    temporada_id,
+    participantes,
+  } = req.body as {
+    temporada_id: string;
+    participantes: number[];
+  };
+
+  if (
+    !temporada_id ||
+    !Array.isArray(participantes) ||
+    participantes.length < 2
+  )
+    return res.status(400).json({
+      error:
+        'temporada_id e ao menos 2 participantes obrigatórios.',
+    });
 
   // Busca temporada para verificar liga
-  const temp = await pool.query(`SELECT * FROM temporadas WHERE id=$1`, [temporada_id]);
-  if (!temp.rows.length) return res.status(404).json({ error: 'Temporada não encontrada.' });
+  const temp = await pool.query(
+    `SELECT * FROM temporadas WHERE id=$1`,
+    [temporada_id],
+  );
+
+  if (!temp.rows.length)
+    return res.status(404).json({
+      error: 'Temporada não encontrada.',
+    });
 
   // Encerra rodada anterior ativa
-  await pool.query(`UPDATE rodadas SET ativa=false WHERE temporada_id=$1`, [temporada_id]);
+  await pool.query(
+    `UPDATE rodadas
+     SET ativa=false
+     WHERE temporada_id=$1`,
+    [temporada_id],
+  );
 
   // Cria nova rodada
-  const countR = await pool.query(`SELECT COUNT(*) FROM rodadas WHERE temporada_id=$1`, [temporada_id]);
+  const countR = await pool.query(
+    `SELECT COUNT(*)
+     FROM rodadas
+     WHERE temporada_id=$1`,
+    [temporada_id],
+  );
+
   const numero = parseInt(String(countR.rows[0].count)) + 1;
+
   const rodada = await pool.query(
-    `INSERT INTO rodadas (temporada_id, numero) VALUES ($1,$2) RETURNING *`,
+    `INSERT INTO rodadas (temporada_id, numero)
+     VALUES ($1,$2)
+     RETURNING *`,
     [temporada_id, numero],
   );
+
   const rodadaId = rodada.rows[0].id;
 
   // Busca posições no ranking para ordenar participantes
   const posQuery = await pool.query(
     `SELECT u.id,
-            COALESCE(SUM(
-              CASE WHEN pa.jogador_a_id=u.id THEN pa.pontos_a+pa.bonus_a
-                   WHEN pa.jogador_b_id=u.id THEN pa.pontos_b+pa.bonus_b ELSE 0 END
-            ),0)::int AS total_pontos
+            COALESCE(
+              SUM(
+                CASE
+                  WHEN pa.jogador_a_id=u.id
+                    THEN pa.pontos_a+pa.bonus_a
+                  WHEN pa.jogador_b_id=u.id
+                    THEN pa.pontos_b+pa.bonus_b
+                  ELSE 0
+                END
+              ),
+              0
+            )::int AS total_pontos
      FROM users u
-     LEFT JOIN partidas pa ON (pa.jogador_a_id=u.id OR pa.jogador_b_id=u.id)
-       AND pa.temporada_id=$1 AND pa.status IN ('confirmada','disputada_admin')
+     LEFT JOIN partidas pa
+       ON (pa.jogador_a_id=u.id OR pa.jogador_b_id=u.id)
+      AND pa.temporada_id=$1
+      AND pa.status IN ('confirmada','disputada_admin')
      WHERE u.id = ANY($2::int[])
      GROUP BY u.id
      ORDER BY total_pontos DESC`,
-    [temporada_id, participantes],
+    [
+      temporada_id,
+      participantes,
+    ],
   );
 
-  const ordered = posQuery.rows.map((r: { id: number }) => r.id);
-  const curingaId: number | null = ordered.length % 2 !== 0 ? ordered.pop()! : null;
+  const ordered = posQuery.rows.map(
+    (r: { id: number }) => r.id,
+  );
 
-  // Gera matchups: pareamento por posição adjacente (mais alto vs segundo mais alto, etc.)
+  const curingaId: number | null =
+    ordered.length % 2 !== 0
+      ? ordered.pop()!
+      : null;
+
+  // Gera matchups
   const inseridos = [];
+
   for (let i = 0; i < ordered.length; i += 2) {
-    const desadoId = ordered[i];     // mais alto no ranking = desafiado
-    const desaId   = ordered[i + 1]; // mais abaixo = desafiante
+    const desadoId = ordered[i];
+    const desaId   = ordered[i + 1];
+
     const r = await pool.query(
       `INSERT INTO partidas
-         (temporada_id, jogador_a_id, jogador_b_id, tipo_partida, data_partida,
+         (temporada_id, jogador_a_id, jogador_b_id,
+          tipo_partida, data_partida,
           wo, pontos_a, pontos_b, bonus_a, bonus_b, rodada_id)
-       VALUES ($1,$2,$3,'melhor_de_3',NOW()::date,false,0,0,0,0,$4) RETURNING *`,
-      [temporada_id, desaId, desadoId, rodadaId],
+       VALUES
+         ($1,$2,$3,'melhor_de_3',NOW()::date,false,0,0,0,0,$4)
+       RETURNING *`,
+      [
+        temporada_id,
+        desaId,
+        desadoId,
+        rodadaId,
+      ],
     );
+
     inseridos.push(r.rows[0]);
   }
 
-  res.status(201).json({ data: { rodada: rodada.rows[0], matchups: inseridos, curinga: curingaId } });
+  res.status(201).json({
+    data: {
+      rodada: rodada.rows[0],
+      matchups: inseridos,
+      curinga: curingaId,
+    },
+  });
 });
 
-// GET /ranking/temporadas/:temporadaId/rodadas — lista rodadas da temporada
-router.get('/temporadas/:temporadaId/rodadas', async (req: Request, res: Response) => {
-  const p = getAuth(req);
-  if (!p) return res.status(401).json({ error: 'Token ausente.' });
+// GET /ranking/temporadas/:temporadaId/rodadas
+router.get(
+  '/temporadas/:temporadaId/rodadas',
+  async (req: Request, res: Response) => {
+    const p = getAuth(req);
+    if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
-  const r = await pool.query(
-    `SELECT ro.*,
-            (SELECT COUNT(*) FROM partidas pa WHERE pa.rodada_id = ro.id) AS total_matchups
-     FROM rodadas ro WHERE ro.temporada_id=$1 ORDER BY ro.numero DESC`,
-    [String(req.params.temporadaId)],
-  );
-  res.json({ data: r.rows });
-});
+    const r = await pool.query(
+      `SELECT ro.*,
+              (SELECT COUNT(*)
+               FROM partidas pa
+               WHERE pa.rodada_id = ro.id) AS total_matchups
+       FROM rodadas ro
+       WHERE ro.temporada_id=$1
+       ORDER BY ro.numero DESC`,
+      [String(req.params.temporadaId)],
+    );
 
-// GET /ranking/rodadas/:id/matchups — matchups de uma rodada com nomes
+    res.json({ data: r.rows });
+  },
+);
+
+// GET /ranking/rodadas/:id/matchups
 router.get('/rodadas/:id/matchups', async (req: Request, res: Response) => {
   const p = getAuth(req);
   if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
   const r = await pool.query(
     `SELECT pa.*,
-            ua.nome AS jogador_a_nome, ua.foto_url AS jogador_a_foto,
-            ub.nome AS jogador_b_nome, ub.foto_url AS jogador_b_foto,
+            ua.nome AS jogador_a_nome,
+            ua.foto_url AS jogador_a_foto,
+            ub.nome AS jogador_b_nome,
+            ub.foto_url AS jogador_b_foto,
             uv.nome AS vencedor_nome
      FROM partidas pa
      JOIN users ua ON ua.id = pa.jogador_a_id
@@ -415,29 +764,50 @@ router.get('/rodadas/:id/matchups', async (req: Request, res: Response) => {
      ORDER BY pa.created_at`,
     [String(req.params.id)],
   );
+
   res.json({ data: r.rows });
 });
 
-// PATCH /ranking/rodadas/:id/encerrar — admin encerra rodada
-router.patch('/rodadas/:id/encerrar', async (req: Request, res: Response) => {
-  const p = getAuth(req);
-  if (!p) return res.status(401).json({ error: 'Token ausente.' });
-  if (p.role !== 'admin') return res.status(403).json({ error: 'Apenas admins.' });
+// PATCH /ranking/rodadas/:id/encerrar
+router.patch(
+  '/rodadas/:id/encerrar',
+  async (req: Request, res: Response) => {
+    const p = getAuth(req);
+    if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
-  const r = await pool.query(`UPDATE rodadas SET ativa=false WHERE id=$1 RETURNING *`, [String(req.params.id)]);
-  if (!r.rows.length) return res.status(404).json({ error: 'Rodada não encontrada.' });
-  res.json({ data: r.rows[0] });
-});
+    if (p.role !== 'admin')
+      return res.status(403).json({
+        error: 'Apenas admins.',
+      });
 
-// GET /ranking/partidas/pendentes — partidas aguardando minha confirmação
+    const r = await pool.query(
+      `UPDATE rodadas
+       SET ativa=false
+       WHERE id=$1
+       RETURNING *`,
+      [String(req.params.id)],
+    );
+
+    if (!r.rows.length)
+      return res.status(404).json({
+        error: 'Rodada não encontrada.',
+      });
+
+    res.json({ data: r.rows[0] });
+  },
+);
+
+// GET /ranking/partidas/pendentes
 router.get('/partidas/pendentes', async (req: Request, res: Response) => {
   const p = getAuth(req);
   if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
   const r = await pool.query(
     `SELECT pa.*,
-            ua.nome AS jogador_a_nome, ua.foto_url AS jogador_a_foto,
-            ub.nome AS jogador_b_nome, ub.foto_url AS jogador_b_foto,
+            ua.nome AS jogador_a_nome,
+            ua.foto_url AS jogador_a_foto,
+            ub.nome AS jogador_b_nome,
+            ub.foto_url AS jogador_b_foto,
             uv.nome AS vencedor_nome
      FROM partidas pa
      JOIN users ua ON ua.id = pa.jogador_a_id
@@ -446,12 +816,14 @@ router.get('/partidas/pendentes', async (req: Request, res: Response) => {
      WHERE pa.status = 'pendente'
        AND (pa.jogador_a_id=$1 OR pa.jogador_b_id=$1)
        AND (
-         (pa.jogador_a_id=$1 AND pa.confirmado_a=false) OR
+         (pa.jogador_a_id=$1 AND pa.confirmado_a=false)
+         OR
          (pa.jogador_b_id=$1 AND pa.confirmado_b=false)
        )
      ORDER BY pa.created_at DESC`,
     [p.user_id],
   );
+
   res.json({ data: r.rows });
 });
 
@@ -461,34 +833,72 @@ router.post('/partidas', async (req: Request, res: Response) => {
   if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
   const {
-    temporada_id, jogador_a_id, jogador_b_id,
-    placar, tipo_partida, wo, wo_vencedor_id, data_partida,
+    temporada_id,
+    jogador_a_id,
+    jogador_b_id,
+    placar,
+    tipo_partida,
+    wo,
+    wo_vencedor_id,
+    data_partida,
   } = req.body;
 
-  if (!temporada_id || !jogador_a_id || !jogador_b_id || !tipo_partida || !data_partida)
-    return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
+  if (
+    !temporada_id ||
+    !jogador_a_id ||
+    !jogador_b_id ||
+    !tipo_partida ||
+    !data_partida
+  )
+    return res.status(400).json({
+      error: 'Campos obrigatórios ausentes.',
+    });
 
   if (jogador_a_id === jogador_b_id)
-    return res.status(400).json({ error: 'Os dois jogadores devem ser diferentes.' });
+    return res.status(400).json({
+      error: 'Os dois jogadores devem ser diferentes.',
+    });
 
   if (wo && !wo_vencedor_id)
-    return res.status(400).json({ error: 'wo_vencedor_id obrigatório em WO.' });
+    return res.status(400).json({
+      error: 'wo_vencedor_id obrigatório em WO.',
+    });
 
-  if (!wo && (!placar || !Array.isArray(placar) || placar.length === 0))
-    return res.status(400).json({ error: 'placar obrigatório quando não é WO.' });
+  if (
+    !wo &&
+    (!placar || !Array.isArray(placar) || placar.length === 0)
+  )
+    return res.status(400).json({
+      error: 'placar obrigatório quando não é WO.',
+    });
 
   const jogadorAId = Number(jogador_a_id);
   const jogadorBId = Number(jogador_b_id);
-  const usuarioEhJogador = p.user_id === jogadorAId || p.user_id === jogadorBId;
+
+  const usuarioEhJogador =
+    p.user_id === jogadorAId ||
+    p.user_id === jogadorBId;
 
   if (p.role !== 'admin' && !usuarioEhJogador)
-    return res.status(403).json({ error: 'Você precisa ser um dos jogadores para registrar este resultado.' });
+    return res.status(403).json({
+      error:
+        'Você precisa ser um dos jogadores para registrar este resultado.',
+    });
 
   const vencedorId: number = wo
     ? Number(wo_vencedor_id)
-    : determinarVencedor(placar as SetScore[], jogadorAId, jogadorBId);
+    : determinarVencedor(
+        placar as SetScore[],
+        jogadorAId,
+        jogadorBId,
+      );
 
-  const { pontosA, pontosB, bonusA, bonusB } = calcularPontos(
+  const {
+    pontosA,
+    pontosB,
+    bonusA,
+    bonusB,
+  } = calcularPontos(
     wo ? [] : (placar as SetScore[]),
     tipo_partida,
     Boolean(wo),
@@ -499,184 +909,341 @@ router.post('/partidas', async (req: Request, res: Response) => {
 
   const r = await pool.query(
     `INSERT INTO partidas
-       (temporada_id, jogador_a_id, jogador_b_id, placar, tipo_partida,
-        vencedor_id, wo, pontos_a, pontos_b, bonus_a, bonus_b, data_partida)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+       (temporada_id, jogador_a_id, jogador_b_id,
+        placar, tipo_partida, vencedor_id,
+        wo, pontos_a, pontos_b, bonus_a, bonus_b, data_partida)
+     VALUES
+       ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+     RETURNING *`,
     [
-      temporada_id, jogador_a_id, jogador_b_id,
-      wo ? null : JSON.stringify(placar), tipo_partida,
-      vencedorId, Boolean(wo),
-      pontosA, pontosB, bonusA, bonusB, data_partida,
+      temporada_id,
+      jogador_a_id,
+      jogador_b_id,
+      wo ? null : JSON.stringify(placar),
+      tipo_partida,
+      vencedorId,
+      Boolean(wo),
+      pontosA,
+      pontosB,
+      bonusA,
+      bonusB,
+      data_partida,
     ],
   );
+
   res.status(201).json({ data: r.rows[0] });
 });
 
-// GET /ranking/temporadas/:temporadaId/partidas — lista partidas com nomes dos jogadores
-router.get('/temporadas/:temporadaId/partidas', async (req: Request, res: Response) => {
-  const p = getAuth(req);
-  if (!p) return res.status(401).json({ error: 'Token ausente.' });
+// GET /ranking/temporadas/:temporadaId/partidas
+router.get(
+  '/temporadas/:temporadaId/partidas',
+  async (req: Request, res: Response) => {
+    const p = getAuth(req);
+    if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
-  const r = await pool.query(
-    `SELECT pa.*,
-            ua.nome AS jogador_a_nome, ua.foto_url AS jogador_a_foto,
-            ub.nome AS jogador_b_nome, ub.foto_url AS jogador_b_foto,
-            uv.nome AS vencedor_nome
-     FROM partidas pa
-     JOIN users ua ON ua.id = pa.jogador_a_id
-     JOIN users ub ON ub.id = pa.jogador_b_id
-     LEFT JOIN users uv ON uv.id = pa.vencedor_id
-     WHERE pa.temporada_id = $1
-     ORDER BY pa.data_partida DESC, pa.created_at DESC`,
-    [req.params.temporadaId],
-  );
-  res.json({ data: r.rows });
-});
-
-// PATCH /ranking/partidas/:id/confirmar — confirmação individual; só vira 'confirmada' quando os 2 confirmam
-router.patch('/partidas/:id/confirmar', async (req: Request, res: Response) => {
-  const p = getAuth(req);
-  if (!p) return res.status(401).json({ error: 'Token ausente.' });
-
-  const partida = await pool.query(`SELECT * FROM partidas WHERE id=$1`, [String(req.params.id)]);
-  if (!partida.rows.length) return res.status(404).json({ error: 'Partida não encontrada.' });
-
-  const pd = partida.rows[0];
-  const jogadorAId = Number(pd.jogador_a_id);
-  const jogadorBId = Number(pd.jogador_b_id);
-  const userId     = Number(p.user_id);
-
-  if (jogadorAId !== userId && jogadorBId !== userId)
-    return res.status(403).json({ error: 'Você não é um dos jogadores desta partida.' });
-
-  const { confirmar } = req.body;
-
-  if (!confirmar) {
     const r = await pool.query(
-      `UPDATE partidas SET status='disputada_admin' WHERE id=$1 RETURNING *`,
+      `SELECT pa.*,
+              ua.nome AS jogador_a_nome,
+              ua.foto_url AS jogador_a_foto,
+              ub.nome AS jogador_b_nome,
+              ub.foto_url AS jogador_b_foto,
+              uv.nome AS vencedor_nome
+       FROM partidas pa
+       JOIN users ua ON ua.id = pa.jogador_a_id
+       JOIN users ub ON ub.id = pa.jogador_b_id
+       LEFT JOIN users uv ON uv.id = pa.vencedor_id
+       WHERE pa.temporada_id = $1
+       ORDER BY pa.data_partida DESC, pa.created_at DESC`,
+      [req.params.temporadaId],
+    );
+
+    res.json({ data: r.rows });
+  },
+);
+
+// PATCH /ranking/partidas/:id/confirmar
+router.patch(
+  '/partidas/:id/confirmar',
+  async (req: Request, res: Response) => {
+    const p = getAuth(req);
+    if (!p) return res.status(401).json({ error: 'Token ausente.' });
+
+    const partida = await pool.query(
+      `SELECT * FROM partidas WHERE id=$1`,
       [String(req.params.id)],
     );
-    return res.json({ data: r.rows[0] });
-  }
 
-  // Marca confirmação do jogador atual
-  const isA = jogadorAId === userId;
-  const col  = isA ? 'confirmado_a' : 'confirmado_b';
-  await pool.query(`UPDATE partidas SET ${col}=true WHERE id=$1`, [String(req.params.id)]);
+    if (!partida.rows.length)
+      return res.status(404).json({
+        error: 'Partida não encontrada.',
+      });
 
-  // Verifica se ambos confirmaram
-  const updated = await pool.query(`SELECT * FROM partidas WHERE id=$1`, [String(req.params.id)]);
-  const up = updated.rows[0];
-  if (up.confirmado_a && up.confirmado_b) {
-    await pool.query(`UPDATE partidas SET status='confirmada' WHERE id=$1`, [String(req.params.id)]);
-    up.status = 'confirmada';
-  }
+    const pd = partida.rows[0];
 
-  res.json({ data: up });
-});
+    const jogadorAId = Number(pd.jogador_a_id);
+    const jogadorBId = Number(pd.jogador_b_id);
+    const userId     = Number(p.user_id);
 
-// PATCH /ranking/partidas/:id/admin — admin resolve disputa
-router.patch('/partidas/:id/admin', async (req: Request, res: Response) => {
-  const p = getAuth(req);
-  if (!p) return res.status(401).json({ error: 'Token ausente.' });
-  if (p.role !== 'admin') return res.status(403).json({ error: 'Apenas admins.' });
+    if (
+      jogadorAId !== userId &&
+      jogadorBId !== userId
+    )
+      return res.status(403).json({
+        error: 'Você não é um dos jogadores desta partida.',
+      });
 
-  const { vencedor_id, placar } = req.body;
-  if (!vencedor_id) return res.status(400).json({ error: 'vencedor_id obrigatório.' });
+    const { confirmar } = req.body;
 
-  const partida = await pool.query(`SELECT * FROM partidas WHERE id=$1`, [req.params.id]);
-  if (!partida.rows.length) return res.status(404).json({ error: 'Partida não encontrada.' });
-  const pd = partida.rows[0];
+    if (!confirmar) {
+      const r = await pool.query(
+        `UPDATE partidas
+         SET status='disputada_admin'
+         WHERE id=$1
+         RETURNING *`,
+        [String(req.params.id)],
+      );
 
-  const finalPlacar = placar ?? pd.placar;
-  const { pontosA, pontosB, bonusA, bonusB } = calcularPontos(
-    pd.wo ? [] : (finalPlacar as SetScore[]),
-    pd.tipo_partida,
-    pd.wo,
-    Number(vencedor_id),
-    pd.jogador_a_id,
-    pd.jogador_b_id,
-  );
+      return res.json({ data: r.rows[0] });
+    }
 
-  const r = await pool.query(
-    `UPDATE partidas
-     SET status='disputada_admin', vencedor_id=$1, placar=$2,
-         pontos_a=$3, pontos_b=$4, bonus_a=$5, bonus_b=$6
-     WHERE id=$7 RETURNING *`,
-    [vencedor_id, finalPlacar ? JSON.stringify(finalPlacar) : null, pontosA, pontosB, bonusA, bonusB, req.params.id],
-  );
-  res.json({ data: r.rows[0] });
-});
+    // Marca confirmação do jogador atual
+    const isA = jogadorAId === userId;
+    const col = isA ? 'confirmado_a' : 'confirmado_b';
+
+    await pool.query(
+      `UPDATE partidas
+       SET ${col}=true
+       WHERE id=$1`,
+      [String(req.params.id)],
+    );
+
+    // Verifica se ambos confirmaram
+    const updated = await pool.query(
+      `SELECT * FROM partidas WHERE id=$1`,
+      [String(req.params.id)],
+    );
+
+    const up = updated.rows[0];
+
+    if (up.confirmado_a && up.confirmado_b) {
+      await pool.query(
+        `UPDATE partidas
+         SET status='confirmada'
+         WHERE id=$1`,
+        [String(req.params.id)],
+      );
+
+      up.status = 'confirmada';
+    }
+
+    res.json({ data: up });
+  },
+);
+
+// PATCH /ranking/partidas/:id/admin
+router.patch(
+  '/partidas/:id/admin',
+  async (req: Request, res: Response) => {
+    const p = getAuth(req);
+    if (!p) return res.status(401).json({ error: 'Token ausente.' });
+
+    if (p.role !== 'admin')
+      return res.status(403).json({
+        error: 'Apenas admins.',
+      });
+
+    const { vencedor_id, placar } = req.body;
+
+    if (!vencedor_id)
+      return res.status(400).json({
+        error: 'vencedor_id obrigatório.',
+      });
+
+    const partida = await pool.query(
+      `SELECT * FROM partidas WHERE id=$1`,
+      [req.params.id],
+    );
+
+    if (!partida.rows.length)
+      return res.status(404).json({
+        error: 'Partida não encontrada.',
+      });
+
+    const pd = partida.rows[0];
+    const finalPlacar = placar ?? pd.placar;
+
+    const {
+      pontosA,
+      pontosB,
+      bonusA,
+      bonusB,
+    } = calcularPontos(
+      pd.wo ? [] : (finalPlacar as SetScore[]),
+      pd.tipo_partida,
+      pd.wo,
+      Number(vencedor_id),
+      pd.jogador_a_id,
+      pd.jogador_b_id,
+    );
+
+    const r = await pool.query(
+      `UPDATE partidas
+       SET status='disputada_admin',
+           vencedor_id=$1,
+           placar=$2,
+           pontos_a=$3,
+           pontos_b=$4,
+           bonus_a=$5,
+           bonus_b=$6
+       WHERE id=$7
+       RETURNING *`,
+      [
+        vencedor_id,
+        finalPlacar
+          ? JSON.stringify(finalPlacar)
+          : null,
+        pontosA,
+        pontosB,
+        bonusA,
+        bonusB,
+        req.params.id,
+      ],
+    );
+
+    res.json({ data: r.rows[0] });
+  },
+);
 
 // =============================================================================
 // RANKING (tabela calculada dinamicamente)
 // =============================================================================
 
-// GET /ranking/temporadas/:temporadaId/tabela?classe= — tabela com TODOS que jogaram ao menos 1 partida
-// Ordenada por pontos DESC; separação por classe feita no frontend
-router.get('/temporadas/:temporadaId/tabela', async (req: Request, res: Response) => {
-  const p = getAuth(req);
-  if (!p) return res.status(401).json({ error: 'Token ausente.' });
+// GET /ranking/temporadas/:temporadaId/tabela?classe=
+router.get(
+  '/temporadas/:temporadaId/tabela',
+  async (req: Request, res: Response) => {
+    const p = getAuth(req);
+    if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
-  const { classe } = req.query as Record<string, string>;
-  const tempId = String(req.params.temporadaId);
+    const { classe } =
+      req.query as Record<string, string>;
 
-  // Liga da temporada
-  const tempRow = await pool.query(`SELECT liga_id FROM temporadas WHERE id=$1`, [tempId]);
-  if (!tempRow.rows.length) return res.status(404).json({ error: 'Temporada não encontrada.' });
-  const ligaId = tempRow.rows[0].liga_id;
+    const tempId =
+      String(req.params.temporadaId);
 
-  const params: (string | null)[] = [tempId, ligaId];
-  let classeWhere = '';
-  if (classe) {
-    params.push(classe);
-    classeWhere = `AND COALESCE(ml.classe,'geral') = $${params.length}`;
-  }
+    const tempRow = await pool.query(
+      `SELECT liga_id
+       FROM temporadas
+       WHERE id=$1`,
+      [tempId],
+    );
 
-  // Retorna TODOS os jogadores que participaram de ao menos 1 partida confirmada
-  // + membros da liga (mesmo sem partidas, aparecem com 0 pontos)
-  const r = await pool.query(
-    `SELECT
-       u.id,
-       u.nome,
-       u.foto_url,
-       COALESCE(ml.classe, 'geral') AS classe,
-       COALESCE(SUM(
-         CASE
-           WHEN pa.jogador_a_id = u.id THEN (pa.pontos_a + pa.bonus_a)
-           WHEN pa.jogador_b_id = u.id THEN (pa.pontos_b + pa.bonus_b)
-           ELSE 0
-         END
-       ), 0)::int AS total_pontos,
-       COUNT(pa.id)::int AS jogos,
-       COUNT(CASE WHEN pa.vencedor_id = u.id THEN 1 END)::int AS vitorias,
-       COUNT(CASE
-         WHEN pa.vencedor_id IS NOT NULL AND pa.vencedor_id != u.id THEN 1
-       END)::int AS derrotas
-     FROM (
-       -- membros ativos da liga
-       SELECT DISTINCT ml2.user_id FROM membros_liga ml2 WHERE ml2.liga_id=$2 AND ml2.ativo=true
-       UNION
-       -- jogadores com pelo menos 1 partida confirmada na temporada (mesmo sem ser membro)
-       SELECT DISTINCT pa2.jogador_a_id FROM partidas pa2
-         WHERE pa2.temporada_id=$1 AND pa2.status IN ('confirmada','disputada_admin')
-       UNION
-       SELECT DISTINCT pa2.jogador_b_id FROM partidas pa2
-         WHERE pa2.temporada_id=$1 AND pa2.status IN ('confirmada','disputada_admin')
-     ) base
-     JOIN users u ON u.id = base.user_id
-     LEFT JOIN membros_liga ml ON ml.liga_id=$2 AND ml.user_id=u.id AND ml.ativo=true
-     LEFT JOIN partidas pa ON
-       (pa.jogador_a_id = u.id OR pa.jogador_b_id = u.id)
-       AND pa.temporada_id = $1
-       AND pa.status IN ('confirmada', 'disputada_admin')
-     WHERE 1=1 ${classeWhere}
-     GROUP BY u.id, u.nome, u.foto_url, ml.classe
-     ORDER BY total_pontos DESC, vitorias DESC, derrotas ASC, u.nome ASC`,
-    params,
-  );
-  res.json({ data: r.rows });
-});
+    if (!tempRow.rows.length)
+      return res.status(404).json({
+        error: 'Temporada não encontrada.',
+      });
+
+    const ligaId = tempRow.rows[0].liga_id;
+
+    const params: (string | null)[] = [
+      tempId,
+      ligaId,
+    ];
+
+    let classeWhere = '';
+
+    if (classe) {
+      params.push(classe);
+
+      classeWhere =
+        `AND COALESCE(ml.classe,'geral') = $${params.length}`;
+    }
+
+    const r = await pool.query(
+      `SELECT
+         u.id,
+         u.nome,
+         u.foto_url,
+         COALESCE(ml.classe, 'geral') AS classe,
+         COALESCE(
+           SUM(
+             CASE
+               WHEN pa.jogador_a_id = u.id
+                 THEN (pa.pontos_a + pa.bonus_a)
+               WHEN pa.jogador_b_id = u.id
+                 THEN (pa.pontos_b + pa.bonus_b)
+               ELSE 0
+             END
+           ),
+           0
+         )::int AS total_pontos,
+         COUNT(pa.id)::int AS jogos,
+         COUNT(
+           CASE
+             WHEN pa.vencedor_id = u.id
+             THEN 1
+           END
+         )::int AS vitorias,
+         COUNT(
+           CASE
+             WHEN pa.vencedor_id IS NOT NULL
+              AND pa.vencedor_id != u.id
+             THEN 1
+           END
+         )::int AS derrotas
+       FROM (
+         SELECT DISTINCT ml2.user_id
+         FROM membros_liga ml2
+         WHERE ml2.liga_id=$2
+           AND ml2.ativo=true
+
+         UNION
+
+         SELECT DISTINCT pa2.jogador_a_id
+         FROM partidas pa2
+         WHERE pa2.temporada_id=$1
+           AND pa2.status IN ('confirmada','disputada_admin')
+
+         UNION
+
+         SELECT DISTINCT pa2.jogador_b_id
+         FROM partidas pa2
+         WHERE pa2.temporada_id=$1
+           AND pa2.status IN ('confirmada','disputada_admin')
+       ) base
+       JOIN users u
+         ON u.id = base.user_id
+       LEFT JOIN membros_liga ml
+         ON ml.liga_id=$2
+        AND ml.user_id=u.id
+        AND ml.ativo=true
+       LEFT JOIN partidas pa
+         ON (
+           pa.jogador_a_id = u.id
+           OR pa.jogador_b_id = u.id
+         )
+        AND pa.temporada_id = $1
+        AND pa.status IN (
+          'confirmada',
+          'disputada_admin'
+        )
+       WHERE 1=1 ${classeWhere}
+       GROUP BY
+         u.id,
+         u.nome,
+         u.foto_url,
+         ml.classe
+       ORDER BY
+         total_pontos DESC,
+         vitorias DESC,
+         derrotas ASC,
+         u.nome ASC`,
+      params,
+    );
+
+    res.json({ data: r.rows });
+  },
+);
 
 
 // GET /ranking/atividades — desafios aceitos do usuário para agenda consolidada da Home
@@ -686,7 +1253,7 @@ router.get('/atividades', async (req: Request, res: Response) => {
 
   const agora = new Date();
   const hoje = agora.toISOString().split('T')[0];
-  const horaAtual = agora.toTimeString().slice(0, 5); // HH:MM
+  const horaAtual = agora.toTimeString().slice(0, 5);
 
   try {
     const r = await pool.query(
@@ -694,73 +1261,199 @@ router.get('/atividades', async (req: Request, res: Response) => {
           ('desafio-' || d.id::text) AS id,
           d.id AS "origemId",
           'desafio' AS tipo,
-          COALESCE(d.contra_data, d.data_sugerida)::text AS "dataInicio",
+
+          COALESCE(
+            d.contra_data,
+            d.data_sugerida
+          )::text AS "dataInicio",
+
           NULL::text AS "dataFim",
-          LEFT(COALESCE(d.contra_horario, d.horario_sugerido)::text, 5) AS "horarioInicio",
-          LEFT(COALESCE(d.contra_horario, d.horario_sugerido)::text, 5) AS "horarioFim",
-          COALESCE(d.contra_local, d.local_sugerido) AS local,
+
+          LEFT(
+            COALESCE(
+              d.contra_horario,
+              d.horario_sugerido
+            )::text,
+            5
+          ) AS "horarioInicio",
+
+          LEFT(
+            COALESCE(
+              d.contra_horario,
+              d.horario_sugerido
+            )::text,
+            5
+          ) AS "horarioFim",
+
+          COALESCE(
+            d.contra_local,
+            d.local_sugerido
+          ) AS local,
+
           CASE
             WHEN d.desafiante_id = $1
-              THEN ('Desafio vs ' || COALESCE(ub.nome, split_part(ub.email, '@', 1), 'Adversário'))
+              THEN (
+                'Desafio vs ' ||
+                COALESCE(
+                  ub.nome,
+                  split_part(ub.email, '@', 1),
+                  'Adversário'
+                )
+              )
             ELSE
-              ('Desafio vs ' || COALESCE(ua.nome, split_part(ua.email, '@', 1), 'Adversário'))
+              (
+                'Desafio vs ' ||
+                COALESCE(
+                  ua.nome,
+                  split_part(ua.email, '@', 1),
+                  'Adversário'
+                )
+              )
           END AS titulo,
+
           CASE
-            WHEN d.desafiante_id = $1 THEN ub.email
+            WHEN d.desafiante_id = $1
+              THEN ub.email
             ELSE ua.email
           END AS "pessoaEmail",
+
           CASE
             WHEN d.desafiante_id = $1
-              THEN COALESCE(ub.nome, split_part(ub.email, '@', 1), 'Adversário')
+              THEN COALESCE(
+                ub.nome,
+                split_part(ub.email, '@', 1),
+                'Adversário'
+              )
             ELSE
-              COALESCE(ua.nome, split_part(ua.email, '@', 1), 'Adversário')
+              COALESCE(
+                ua.nome,
+                split_part(ua.email, '@', 1),
+                'Adversário'
+              )
           END AS "pessoaNome",
+
           CASE
             WHEN d.desafiante_id = $1
-              THEN COALESCE(ub.nome, split_part(ub.email, '@', 1), 'Adversário')
+              THEN COALESCE(
+                ub.nome,
+                split_part(ub.email, '@', 1),
+                'Adversário'
+              )
             ELSE
-              COALESCE(ua.nome, split_part(ua.email, '@', 1), 'Adversário')
+              COALESCE(
+                ua.nome,
+                split_part(ua.email, '@', 1),
+                'Adversário'
+              )
           END AS "adversarioNome",
+
           CASE
-            WHEN d.desafiante_id = $1 THEN ub.email
+            WHEN d.desafiante_id = $1
+              THEN ub.email
             ELSE ua.email
           END AS "adversarioEmail",
+
           d.status,
+
           CASE
-            WHEN COALESCE(d.contra_data, d.data_sugerida)::text < $2
-              OR (
-                COALESCE(d.contra_data, d.data_sugerida)::text = $2
-                AND LEFT(COALESCE(d.contra_horario, d.horario_sugerido)::text, 5) <= $3
-              )
+            WHEN COALESCE(
+              d.contra_data,
+              d.data_sugerida
+            )::text < $2
+
+            OR (
+              COALESCE(
+                d.contra_data,
+                d.data_sugerida
+              )::text = $2
+
+              AND LEFT(
+                COALESCE(
+                  d.contra_horario,
+                  d.horario_sugerido
+                )::text,
+                5
+              ) <= $3
+            )
+
             THEN true
             ELSE false
           END AS passado
+
        FROM desafios d
-       JOIN users ua ON ua.id = d.desafiante_id
-       JOIN users ub ON ub.id = d.desafiado_id
+
+       JOIN users ua
+         ON ua.id = d.desafiante_id
+
+       JOIN users ub
+         ON ub.id = d.desafiado_id
+
        WHERE d.status = 'aceito'
          AND d.desafiante_id <> d.desafiado_id
-         AND (d.desafiante_id = $1 OR d.desafiado_id = $1)
+         AND (
+           d.desafiante_id = $1
+           OR d.desafiado_id = $1
+         )
+
        ORDER BY
          CASE
-           WHEN COALESCE(d.contra_data, d.data_sugerida)::text < $2
-             OR (
-               COALESCE(d.contra_data, d.data_sugerida)::text = $2
-               AND LEFT(COALESCE(d.contra_horario, d.horario_sugerido)::text, 5) <= $3
-             )
+           WHEN COALESCE(
+             d.contra_data,
+             d.data_sugerida
+           )::text < $2
+
+           OR (
+             COALESCE(
+               d.contra_data,
+               d.data_sugerida
+             )::text = $2
+
+             AND LEFT(
+               COALESCE(
+                 d.contra_horario,
+                 d.horario_sugerido
+               )::text,
+               5
+             ) <= $3
+           )
+
            THEN 1
            ELSE 0
          END,
-         COALESCE(d.contra_data, d.data_sugerida)::text ASC,
-         LEFT(COALESCE(d.contra_horario, d.horario_sugerido)::text, 5) ASC
+
+         COALESCE(
+           d.contra_data,
+           d.data_sugerida
+         )::text ASC,
+
+         LEFT(
+           COALESCE(
+             d.contra_horario,
+             d.horario_sugerido
+           )::text,
+           5
+         ) ASC
+
        LIMIT 80`,
-      [p.user_id, hoje, horaAtual],
+      [
+        p.user_id,
+        hoje,
+        horaAtual,
+      ],
     );
 
     res.json({ data: r.rows });
+
   } catch (e) {
-    console.error('[GET /ranking/atividades]', e);
-    res.status(500).json({ error: 'Erro ao carregar desafios aceitos.' });
+    console.error(
+      '[GET /ranking/atividades]',
+      e,
+    );
+
+    res.status(500).json({
+      error:
+        'Erro ao carregar desafios aceitos.',
+    });
   }
 });
 
@@ -772,138 +1465,400 @@ router.get('/atividades', async (req: Request, res: Response) => {
 // POST /ranking/desafios — aluno desafia outro membro da liga
 router.post('/desafios', async (req: Request, res: Response) => {
   const p = getAuth(req);
-  if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
-  const { liga_id, desafiado_id, data_sugerida, horario_sugerido, local_sugerido } = req.body;
-  if (!liga_id || !desafiado_id || !data_sugerida || !horario_sugerido || !local_sugerido)
-    return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
+  if (!p)
+    return res.status(401).json({
+      error: 'Token ausente.',
+    });
+
+  const {
+    liga_id,
+    desafiado_id,
+    data_sugerida,
+    horario_sugerido,
+    local_sugerido,
+  } = req.body;
+
+  if (
+    !liga_id ||
+    !desafiado_id ||
+    !data_sugerida ||
+    !horario_sugerido ||
+    !local_sugerido
+  )
+    return res.status(400).json({
+      error: 'Campos obrigatórios ausentes.',
+    });
 
   if (p.user_id === Number(desafiado_id))
-    return res.status(400).json({ error: 'Você não pode se desafiar.' });
+    return res.status(400).json({
+      error: 'Você não pode se desafiar.',
+    });
 
   const r = await pool.query(
     `INSERT INTO desafios
-       (liga_id, desafiante_id, desafiado_id, data_sugerida, horario_sugerido, local_sugerido)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [liga_id, p.user_id, desafiado_id, data_sugerida, horario_sugerido, local_sugerido],
+       (
+         liga_id,
+         desafiante_id,
+         desafiado_id,
+         data_sugerida,
+         horario_sugerido,
+         local_sugerido
+       )
+     VALUES ($1,$2,$3,$4,$5,$6)
+     RETURNING *`,
+    [
+      liga_id,
+      p.user_id,
+      desafiado_id,
+      data_sugerida,
+      horario_sugerido,
+      local_sugerido,
+    ],
   );
-  res.status(201).json({ data: r.rows[0] });
+
+  // ---------------------------------------------------------------------------
+  // ENVIO DE E-MAIL
+  // O desafio já foi criado acima.
+  // Se o envio falhar, o desafio continua existindo normalmente.
+  // ---------------------------------------------------------------------------
+  try {
+    const usuarios = await pool.query(
+      `SELECT
+         ua.nome AS desafiante_nome,
+         ua.email AS desafiante_email,
+         ub.nome AS desafiado_nome,
+         ub.email AS desafiado_email
+       FROM users ua
+       JOIN users ub
+         ON ub.id = $2
+       WHERE ua.id = $1`,
+      [
+        p.user_id,
+        desafiado_id,
+      ],
+    );
+
+    if (!usuarios.rows.length) {
+      console.warn(
+        '[EMAIL DESAFIO] Não foi possível localizar os usuários do desafio.',
+      );
+    } else {
+      const dados = usuarios.rows[0];
+
+      if (!dados.desafiado_email) {
+        console.warn(
+          '[EMAIL DESAFIO] O usuário desafiado não possui e-mail cadastrado.',
+        );
+      } else {
+        await enviarEmailNovoDesafio({
+          desafiadoNome:
+            dados.desafiado_nome ||
+            String(dados.desafiado_email).split('@')[0] ||
+            'Jogador',
+
+          desafiadoEmail:
+            String(dados.desafiado_email),
+
+          desafianteNome:
+            dados.desafiante_nome ||
+            String(dados.desafiante_email ?? '').split('@')[0] ||
+            'Um jogador',
+
+          data:
+            String(data_sugerida),
+
+          horario:
+            String(horario_sugerido),
+
+          local:
+            String(local_sugerido),
+        });
+
+        console.log(
+          `[EMAIL DESAFIO] E-mail enviado para ${dados.desafiado_email}.`,
+        );
+      }
+    }
+  } catch (emailError) {
+    console.error(
+      '[EMAIL DESAFIO] Desafio criado, mas houve erro ao enviar o e-mail:',
+      emailError,
+    );
+  }
+
+  res.status(201).json({
+    data: r.rows[0],
+  });
 });
 
 
 // GET /ranking/desafios/pendentes — próximo desafio recebido aguardando resposta
-router.get('/desafios/pendentes', async (req: Request, res: Response) => {
-  const p = getAuth(req);
-  if (!p) return res.status(401).json({ error: 'Token ausente.' });
+router.get(
+  '/desafios/pendentes',
+  async (req: Request, res: Response) => {
+    const p = getAuth(req);
 
-  const r = await pool.query(
-    `SELECT d.*,
-            ua.nome AS desafiante_nome, ua.foto_url AS desafiante_foto,
-            ub.nome AS desafiado_nome,  ub.foto_url AS desafiado_foto
-     FROM desafios d
-     JOIN users ua ON ua.id = d.desafiante_id
-     JOIN users ub ON ub.id = d.desafiado_id
-     WHERE d.desafiado_id = $1
-       AND d.status = 'pendente'
-     ORDER BY d.created_at ASC
-     LIMIT 1`,
-    [p.user_id],
-  );
+    if (!p)
+      return res.status(401).json({
+        error: 'Token ausente.',
+      });
 
-  res.json({ data: r.rows[0] ?? null });
-});
+    const r = await pool.query(
+      `SELECT
+          d.*,
+          ua.nome AS desafiante_nome,
+          ua.foto_url AS desafiante_foto,
+          ub.nome AS desafiado_nome,
+          ub.foto_url AS desafiado_foto
+       FROM desafios d
+       JOIN users ua
+         ON ua.id = d.desafiante_id
+       JOIN users ub
+         ON ub.id = d.desafiado_id
+       WHERE d.desafiado_id = $1
+         AND d.status = 'pendente'
+       ORDER BY d.created_at ASC
+       LIMIT 1`,
+      [p.user_id],
+    );
 
-// GET /ranking/desafios?ligaId= — desafios do usuário (enviados e recebidos)
+    res.json({
+      data: r.rows[0] ?? null,
+    });
+  },
+);
+
+// GET /ranking/desafios?ligaId=
 router.get('/desafios', async (req: Request, res: Response) => {
   const p = getAuth(req);
-  if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
-  const ligaId = String((req.query as Record<string, string>).ligaId ?? '');
-  if (!ligaId) return res.status(400).json({ error: 'ligaId obrigatório.' });
+  if (!p)
+    return res.status(401).json({
+      error: 'Token ausente.',
+    });
+
+  const ligaId = String(
+    (req.query as Record<string, string>).ligaId ?? '',
+  );
+
+  if (!ligaId)
+    return res.status(400).json({
+      error: 'ligaId obrigatório.',
+    });
 
   const r = await pool.query(
-    `SELECT d.*,
-            ua.nome AS desafiante_nome, ua.foto_url AS desafiante_foto,
-            ub.nome AS desafiado_nome,  ub.foto_url AS desafiado_foto
+    `SELECT
+        d.*,
+        ua.nome AS desafiante_nome,
+        ua.foto_url AS desafiante_foto,
+        ub.nome AS desafiado_nome,
+        ub.foto_url AS desafiado_foto
      FROM desafios d
-     JOIN users ua ON ua.id = d.desafiante_id
-     JOIN users ub ON ub.id = d.desafiado_id
+     JOIN users ua
+       ON ua.id = d.desafiante_id
+     JOIN users ub
+       ON ub.id = d.desafiado_id
      WHERE d.liga_id = $1
-       AND (d.desafiante_id = $2 OR d.desafiado_id = $2)
+       AND (
+         d.desafiante_id = $2
+         OR d.desafiado_id = $2
+       )
      ORDER BY d.created_at DESC`,
-    [ligaId, p.user_id],
-  );
-  res.json({ data: r.rows });
-});
-
-// PATCH /ranking/desafios/:id — aceitar, recusar ou contrapropor
-router.patch('/desafios/:id', async (req: Request, res: Response) => {
-  const p = getAuth(req);
-  if (!p) return res.status(401).json({ error: 'Token ausente.' });
-
-  const { status, contra_data, contra_horario, contra_local } = req.body;
-  const valid = ['aceito', 'recusado', 'contraproposto', 'cancelado'];
-  if (!valid.includes(status))
-    return res.status(400).json({ error: `status deve ser: ${valid.join(', ')}.` });
-
-  const r = await pool.query(
-    `UPDATE desafios
-     SET status=$1, contra_data=$2, contra_horario=$3, contra_local=$4
-     WHERE id=$5
-       AND (desafiante_id=$6 OR desafiado_id=$6)
-     RETURNING *`,
-    [status, contra_data ?? null, contra_horario ?? null, contra_local ?? null, req.params.id, p.user_id],
-  );
-  if (!r.rows.length) return res.status(404).json({ error: 'Desafio não encontrado.' });
-  res.json({ data: r.rows[0] });
-});
-
-// POST /ranking/desafios/:id/partida — converte desafio aceito em partida
-router.post('/desafios/:id/partida', async (req: Request, res: Response) => {
-  const p = getAuth(req);
-  if (!p) return res.status(401).json({ error: 'Token ausente.' });
-
-  const desafio = await pool.query(`SELECT * FROM desafios WHERE id=$1`, [req.params.id]);
-  if (!desafio.rows.length) return res.status(404).json({ error: 'Desafio não encontrado.' });
-  const d = desafio.rows[0];
-  if (d.status !== 'aceito') return res.status(400).json({ error: 'Desafio não foi aceito ainda.' });
-
-  const { temporada_id, placar, tipo_partida, wo, wo_vencedor_id, data_partida } = req.body;
-  if (!temporada_id || !tipo_partida || !data_partida)
-    return res.status(400).json({ error: 'temporada_id, tipo_partida e data_partida obrigatórios.' });
-
-  const vencedorId: number = wo
-    ? Number(wo_vencedor_id)
-    : determinarVencedor(placar as SetScore[], d.desafiante_id, d.desafiado_id);
-
-  const { pontosA, pontosB, bonusA, bonusB } = calcularPontos(
-    wo ? [] : (placar as SetScore[]),
-    tipo_partida,
-    Boolean(wo),
-    vencedorId,
-    d.desafiante_id,
-    d.desafiado_id,
-  );
-
-  const partida = await pool.query(
-    `INSERT INTO partidas
-       (temporada_id, jogador_a_id, jogador_b_id, placar, tipo_partida,
-        vencedor_id, wo, pontos_a, pontos_b, bonus_a, bonus_b, data_partida)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
     [
-      temporada_id, d.desafiante_id, d.desafiado_id,
-      wo ? null : JSON.stringify(placar), tipo_partida,
-      vencedorId, Boolean(wo),
-      pontosA, pontosB, bonusA, bonusB, data_partida,
+      ligaId,
+      p.user_id,
     ],
   );
 
-  await pool.query(
-    `UPDATE desafios SET partida_id=$1 WHERE id=$2`,
-    [partida.rows[0].id, req.params.id],
-  );
-
-  res.status(201).json({ data: partida.rows[0] });
+  res.json({ data: r.rows });
 });
+
+// PATCH /ranking/desafios/:id
+router.patch(
+  '/desafios/:id',
+  async (req: Request, res: Response) => {
+    const p = getAuth(req);
+
+    if (!p)
+      return res.status(401).json({
+        error: 'Token ausente.',
+      });
+
+    const {
+      status,
+      contra_data,
+      contra_horario,
+      contra_local,
+    } = req.body;
+
+    const valid = [
+      'aceito',
+      'recusado',
+      'contraproposto',
+      'cancelado',
+    ];
+
+    if (!valid.includes(status))
+      return res.status(400).json({
+        error:
+          `status deve ser: ${valid.join(', ')}.`,
+      });
+
+    const r = await pool.query(
+      `UPDATE desafios
+       SET
+         status=$1,
+         contra_data=$2,
+         contra_horario=$3,
+         contra_local=$4
+       WHERE id=$5
+         AND (
+           desafiante_id=$6
+           OR desafiado_id=$6
+         )
+       RETURNING *`,
+      [
+        status,
+        contra_data ?? null,
+        contra_horario ?? null,
+        contra_local ?? null,
+        req.params.id,
+        p.user_id,
+      ],
+    );
+
+    if (!r.rows.length)
+      return res.status(404).json({
+        error: 'Desafio não encontrado.',
+      });
+
+    res.json({
+      data: r.rows[0],
+    });
+  },
+);
+
+// POST /ranking/desafios/:id/partida
+router.post(
+  '/desafios/:id/partida',
+  async (req: Request, res: Response) => {
+    const p = getAuth(req);
+
+    if (!p)
+      return res.status(401).json({
+        error: 'Token ausente.',
+      });
+
+    const desafio = await pool.query(
+      `SELECT *
+       FROM desafios
+       WHERE id=$1`,
+      [req.params.id],
+    );
+
+    if (!desafio.rows.length)
+      return res.status(404).json({
+        error: 'Desafio não encontrado.',
+      });
+
+    const d = desafio.rows[0];
+
+    if (d.status !== 'aceito')
+      return res.status(400).json({
+        error: 'Desafio não foi aceito ainda.',
+      });
+
+    const {
+      temporada_id,
+      placar,
+      tipo_partida,
+      wo,
+      wo_vencedor_id,
+      data_partida,
+    } = req.body;
+
+    if (
+      !temporada_id ||
+      !tipo_partida ||
+      !data_partida
+    )
+      return res.status(400).json({
+        error:
+          'temporada_id, tipo_partida e data_partida obrigatórios.',
+      });
+
+    const vencedorId: number = wo
+      ? Number(wo_vencedor_id)
+      : determinarVencedor(
+          placar as SetScore[],
+          d.desafiante_id,
+          d.desafiado_id,
+        );
+
+    const {
+      pontosA,
+      pontosB,
+      bonusA,
+      bonusB,
+    } = calcularPontos(
+      wo ? [] : (placar as SetScore[]),
+      tipo_partida,
+      Boolean(wo),
+      vencedorId,
+      d.desafiante_id,
+      d.desafiado_id,
+    );
+
+    const partida = await pool.query(
+      `INSERT INTO partidas
+         (
+           temporada_id,
+           jogador_a_id,
+           jogador_b_id,
+           placar,
+           tipo_partida,
+           vencedor_id,
+           wo,
+           pontos_a,
+           pontos_b,
+           bonus_a,
+           bonus_b,
+           data_partida
+         )
+       VALUES
+         ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       RETURNING *`,
+      [
+        temporada_id,
+        d.desafiante_id,
+        d.desafiado_id,
+        wo ? null : JSON.stringify(placar),
+        tipo_partida,
+        vencedorId,
+        Boolean(wo),
+        pontosA,
+        pontosB,
+        bonusA,
+        bonusB,
+        data_partida,
+      ],
+    );
+
+    await pool.query(
+      `UPDATE desafios
+       SET partida_id=$1
+       WHERE id=$2`,
+      [
+        partida.rows[0].id,
+        req.params.id,
+      ],
+    );
+
+    res.status(201).json({
+      data: partida.rows[0],
+    });
+  },
+);
 
 export { router as rankingRouter };
