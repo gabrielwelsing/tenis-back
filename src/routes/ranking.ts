@@ -300,7 +300,7 @@ router.post('/ligas/:ligaId/membros', async (req: Request, res: Response) => {
     [
       req.params.ligaId,
       userId,
-      classe ?? 'intermediario',
+      classe ?? 'iniciante',
     ],
   );
 
