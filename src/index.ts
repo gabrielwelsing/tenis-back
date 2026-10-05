@@ -2,6 +2,8 @@
 // TENIS-BACK — Entry point
 // =============================================================================
 import express from 'express';
+// Erros em handlers async vão para o error handler em vez de derrubar o processo
+import 'express-async-errors';
 import cors    from 'cors';
 import { clipsRouter }    from './routes/clips';
 import { gabaritoRouter } from './routes/gabarito';
@@ -44,5 +46,14 @@ app.use('/agenda',   agendaRouter);
 app.use('/quadras',  quadrasRouter);
 app.use('/ranking',  rankingRouter);
 app.use('/payment',  paymentRouter);
+
+// ── Error handler global — responde 500 em vez de derrubar o servidor ──────
+app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error(`[Erro] ${req.method} ${req.originalUrl}`, err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: 'Erro interno.' });
+});
+
+process.on('unhandledRejection', err => console.error('[unhandledRejection]', err));
 
 app.listen(PORT, () => console.log(`tenis-back rodando na porta ${PORT}`));
