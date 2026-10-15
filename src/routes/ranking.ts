@@ -986,6 +986,43 @@ router.get(
   },
 );
 
+// DELETE /ranking/partidas/:id — admin da liga exclui partida registrada errada.
+// O ranking é calculado a partir das partidas, então os pontos se ajustam sozinhos.
+router.delete('/partidas/:id', async (req: Request, res: Response) => {
+  const p = getAuth(req);
+  if (!p) return res.status(401).json({ error: 'Token ausente.' });
+
+  const dono = await pool.query(
+    `SELECT pa.id
+     FROM partidas pa
+     JOIN temporadas t ON t.id = pa.temporada_id
+     JOIN ligas l ON l.id = t.liga_id
+     WHERE pa.id = $1 AND l.admin_id = $2`,
+    [req.params.id, p.user_id],
+  );
+
+  if (!dono.rows.length)
+    return res.status(404).json({
+      error: 'Partida não encontrada ou você não é o administrador da liga.',
+    });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // desafio que gerou a partida volta a ficar sem partida vinculada
+    await client.query(`UPDATE desafios SET partida_id = NULL WHERE partida_id = $1`, [req.params.id]);
+    await client.query(`DELETE FROM partidas WHERE id = $1`, [req.params.id]);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  res.json({ ok: true });
+});
+
 // PATCH /ranking/partidas/:id/confirmar
 router.patch(
   '/partidas/:id/confirmar',
@@ -1064,6 +1101,32 @@ router.patch(
     res.json({ data: up });
   },
 );
+
+// PATCH /ranking/partidas/:id/aprovar — admin da liga aprova o resultado
+// (pendente ou em disputa) sem esperar a confirmação dos jogadores.
+router.patch('/partidas/:id/aprovar', async (req: Request, res: Response) => {
+  const p = getAuth(req);
+  if (!p) return res.status(401).json({ error: 'Token ausente.' });
+
+  const r = await pool.query(
+    `UPDATE partidas pa
+     SET status = 'confirmada', confirmado_a = true, confirmado_b = true
+     FROM temporadas t, ligas l
+     WHERE pa.id = $1
+       AND t.id = pa.temporada_id
+       AND l.id = t.liga_id
+       AND l.admin_id = $2
+     RETURNING pa.*`,
+    [req.params.id, p.user_id],
+  );
+
+  if (!r.rows.length)
+    return res.status(404).json({
+      error: 'Partida não encontrada ou você não é o administrador da liga.',
+    });
+
+  res.json({ data: r.rows[0] });
+});
 
 // PATCH /ranking/partidas/:id/admin
 router.patch(
