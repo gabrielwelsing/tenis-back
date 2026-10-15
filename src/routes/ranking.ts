@@ -161,7 +161,7 @@ async function isLigaAdmin(
   userId: number,
 ): Promise<boolean> {
   const r = await pool.query(
-    `SELECT id FROM ligas WHERE id=$1 AND admin_id=$2`,
+    `SELECT id FROM ligas WHERE id=$1 AND admin_id=$2 AND excluida_em IS NULL`,
     [ligaId, userId],
   );
 
@@ -221,20 +221,45 @@ router.get('/ligas', async (req: Request, res: Response) => {
             (SELECT COUNT(*)
              FROM membros_liga ml2
              WHERE ml2.liga_id = l.id
-               AND ml2.ativo = true) AS total_membros
+               AND ml2.ativo = true) AS total_membros,
+            (SELECT COUNT(*)
+             FROM partidas pa
+             JOIN temporadas t2 ON t2.id = pa.temporada_id
+             WHERE t2.liga_id = l.id) AS total_partidas
      FROM ligas l
      JOIN users u ON u.id = l.admin_id
      LEFT JOIN membros_liga ml
        ON ml.liga_id = l.id
       AND ml.user_id = $1
       AND ml.ativo = true
-     WHERE l.admin_id = $1
-        OR ml.user_id = $1
+     WHERE l.excluida_em IS NULL
+       AND (l.admin_id = $1 OR ml.user_id = $1)
      ORDER BY l.created_at DESC`,
     [p.user_id],
   );
 
   res.json({ data: r.rows });
+});
+
+// DELETE /ranking/ligas/:ligaId — admin dono exclui (arquiva) a liga.
+// Some das listas para todos; dados ficam no banco e podem ser recuperados.
+router.delete('/ligas/:ligaId', async (req: Request, res: Response) => {
+  const p = getAuth(req);
+  if (!p) return res.status(401).json({ error: 'Token ausente.' });
+
+  const r = await pool.query(
+    `UPDATE ligas SET excluida_em = NOW()
+     WHERE id = $1 AND admin_id = $2 AND excluida_em IS NULL
+     RETURNING id, nome`,
+    [req.params.ligaId, p.user_id],
+  );
+
+  if (!r.rows.length)
+    return res.status(404).json({
+      error: 'Liga não encontrada ou você não é o administrador dela.',
+    });
+
+  res.json({ data: r.rows[0] });
 });
 
 // GET /ranking/ligas/:ligaId/membros — lista membros com dados do usuário
