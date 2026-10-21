@@ -1334,6 +1334,32 @@ router.get(
 );
 
 
+// GET /ranking/proximos-jogos — confrontos aceitos (de qualquer jogador) para a vitrine da Home
+router.get('/proximos-jogos', async (req: Request, res: Response) => {
+  const p = getAuth(req);
+  if (!p) return res.status(401).json({ error: 'Token ausente.' });
+
+  const r = await pool.query(
+    `SELECT d.id,
+            COALESCE(d.contra_data, d.data_sugerida)::text AS data,
+            LEFT(COALESCE(d.contra_horario, d.horario_sugerido)::text, 5) AS horario,
+            COALESCE(d.contra_local, d.local_sugerido) AS local,
+            ua.nome AS jogador_a,
+            ub.nome AS jogador_b
+     FROM desafios d
+     JOIN ligas l ON l.id = d.liga_id AND l.excluida_em IS NULL
+     JOIN users ua ON ua.id = d.desafiante_id
+     JOIN users ub ON ub.id = d.desafiado_id
+     WHERE d.status = 'aceito'
+       AND d.partida_id IS NULL
+       AND COALESCE(d.contra_data, d.data_sugerida)::date >= (NOW() AT TIME ZONE 'America/Sao_Paulo')::date
+     ORDER BY 2, 3
+     LIMIT 10`,
+  );
+
+  res.json({ data: r.rows });
+});
+
 // GET /ranking/atividades — desafios aceitos do usuário para agenda consolidada da Home
 router.get('/atividades', async (req: Request, res: Response) => {
   const p = getAuth(req);
