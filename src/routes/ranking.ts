@@ -155,6 +155,18 @@ function determinarVencedor(
   return setsA > setsB ? jogadorAId : jogadorBId;
 }
 
+// ─── Data/hora atual em America/Sao_Paulo ──────────────────────────────────────
+function agoraBrasilia(): { hoje: string; horaAtual: string } {
+  const partes = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Sao_Paulo',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    }).formatToParts(new Date()).map(p => [p.type, p.value]),
+  );
+  return { hoje: `${partes.year}-${partes.month}-${partes.day}`, horaAtual: `${partes.hour}:${partes.minute}` };
+}
+
 // ─── Verify liga admin ────────────────────────────────────────────────────────
 async function isLigaAdmin(
   ligaId: string,
@@ -1365,9 +1377,8 @@ router.get('/atividades', async (req: Request, res: Response) => {
   const p = getAuth(req);
   if (!p) return res.status(401).json({ error: 'Token ausente.' });
 
-  const agora = new Date();
-  const hoje = agora.toISOString().split('T')[0];
-  const horaAtual = agora.toTimeString().slice(0, 5);
+  // data e hora sempre no fuso de Brasília (o servidor roda em UTC)
+  const { hoje, horaAtual } = agoraBrasilia();
 
   try {
     const r = await pool.query(
