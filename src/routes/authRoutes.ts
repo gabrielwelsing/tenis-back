@@ -323,7 +323,10 @@ router.post('/admin/users', async (req: Request, res: Response) => {
   if (!admin) return res.status(403).json({ error: 'Acesso restrito a administradores.' });
 
   const nome       = String(req.body?.nome ?? '').trim();
-  const username   = String(req.body?.username ?? '').trim().toLowerCase();
+  const login      = String(req.body?.username ?? '').trim().toLowerCase();
+  const loginEmail = login.includes('@');
+  const username   = loginEmail ? null : login;
+  const email      = loginEmail ? login : null;
   const senha      = String(req.body?.senha ?? '');
   const plano      = req.body?.plano === 'aluno' ? 'aluno' : 'user';
   const dias       = Number(req.body?.dias);
@@ -331,8 +334,8 @@ router.post('/admin/users', async (req: Request, res: Response) => {
   const localidade = String(req.body?.localidade ?? '').trim() || null;
 
   if (!nome) return res.status(400).json({ error: 'Informe o nome do aluno.' });
-  if (!USERNAME_REGEX.test(username))
-    return res.status(400).json({ error: 'Usuário deve ter de 3 a 30 caracteres: letras minúsculas, números, ponto, hífen ou underline.' });
+  if (loginEmail ? !EMAIL_REGEX.test(login) : !USERNAME_REGEX.test(login))
+    return res.status(400).json({ error: loginEmail ? 'E-mail inválido.' : 'Usuário deve ter de 3 a 30 caracteres: letras minúsculas, números, ponto, hífen ou underline.' });
   if (senha.length < SENHA_MIN)
     return res.status(400).json({ error: `A senha provisória deve ter pelo menos ${SENHA_MIN} caracteres.` });
   if (plano === 'aluno' && (!Number.isInteger(dias) || dias <= 0 || dias > 365))
@@ -342,17 +345,17 @@ router.post('/admin/users', async (req: Request, res: Response) => {
 
   try {
     const result = await pool.query(
-      `INSERT INTO users (nome, username, password_hash, role, telefone, localidade, plano_expira_em, primeiro_acesso, criado_por)
-       VALUES ($1, $2, $3, $4, $5, $6,
+      `INSERT INTO users (nome, username, email, password_hash, role, telefone, localidade, plano_expira_em, primeiro_acesso, criado_por)
+       VALUES ($1, $2, $9, $3, $4, $5, $6,
                CASE WHEN $4 = 'aluno' THEN (CURRENT_DATE + ($7::int * INTERVAL '1 day'))::date ELSE NULL END,
                true, $8)
        RETURNING id, nome, email, role, foto_url, localidade, telefone, plano_expira_em, username, primeiro_acesso`,
-      [nome, username, hash, plano, telefone, localidade, plano === 'aluno' ? dias : 0, admin.id]
+      [nome, username, hash, plano, telefone, localidade, plano === 'aluno' ? dias : 0, admin.id, email]
     );
 
     return res.status(201).json({ ok: true, user: formatUser(result.rows[0]) });
   } catch (e: any) {
-    if (e.code === '23505') return res.status(409).json({ error: 'Esse usuário já existe. Escolha outro.' });
+    if (e.code === '23505') return res.status(409).json({ error: loginEmail ? 'Esse e-mail já tem conta.' : 'Esse usuário já existe. Escolha outro.' });
     console.error('[Admin criar usuário]', e);
     return res.status(500).json({ error: 'Erro ao criar usuário.' });
   }
